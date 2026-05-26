@@ -1793,9 +1793,6 @@ function RecallPanel({ kbId }: { kbId: string }) {
   const [query, setQuery] = useState("")
   const [results, setResults] = useState<SearchResult[]>([])
   const [mode, setMode] = useState<string>("keyword")
-  const [question, setQuestion] = useState("")
-  const [answer, setAnswer] = useState("")
-  const [conversationId, setConversationId] = useState<string | undefined>()
   const [lightbox, setLightbox] = useState<SearchResult["images"][number] | null>(null)
 
   const runSearch = async () => {
@@ -1805,16 +1802,8 @@ function RecallPanel({ kbId }: { kbId: string }) {
     setResults(response.results)
   }
 
-  const ask = async () => {
-    if (!question.trim()) return
-    const response = await api.chat(kbId, question, conversationId)
-    setConversationId(response.conversationId)
-    setAnswer(response.answer)
-    setResults(response.citations)
-  }
-
   return (
-    <section className="grid h-full min-h-0 grid-cols-[minmax(0,1fr)_360px] gap-3 p-3">
+    <section className="h-full min-h-0 p-3">
       <div className="min-h-0 overflow-auto rounded-md border border-neutral-200 bg-white">
         <div className="border-b border-neutral-200 px-4 py-3">
           <h2 className="text-base font-semibold">召回</h2>
@@ -1857,20 +1846,6 @@ function RecallPanel({ kbId }: { kbId: string }) {
           ))}
         </div>
       </div>
-      <aside className="min-h-0 overflow-auto rounded-md border border-neutral-200 bg-white">
-        <div className="border-b border-neutral-200 px-4 py-3">
-          <h2 className="text-base font-semibold">问答</h2>
-          <p className="mt-1 text-sm text-neutral-600">服务端完成搜索、图谱扩展、上下文预算和引用。</p>
-        </div>
-        <div className="p-4">
-          <textarea className="h-32 w-full resize-none rounded-md border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-cyan-700" value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="问一个具体问题" />
-          <button className="mt-3 inline-flex h-10 items-center gap-2 rounded-md bg-cyan-700 px-4 text-sm font-medium text-white" onClick={() => void ask()}>
-            <Bot className="h-4 w-4" />
-            提问
-          </button>
-          {answer && <pre className="mt-4 max-h-[390px] overflow-auto whitespace-pre-wrap border border-neutral-200 bg-neutral-50 p-3 text-sm leading-6">{answer}</pre>}
-        </div>
-      </aside>
       {lightbox && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-8" onClick={() => setLightbox(null)}>
           <div className="max-h-full max-w-4xl bg-white p-4" onClick={(event) => event.stopPropagation()}>
