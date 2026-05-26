@@ -15,6 +15,10 @@ interface ChatResponse {
   choices?: Array<{ message?: { content?: string } }>
 }
 
+interface AnthropicResponse {
+  content?: Array<{ type?: string; text?: string }>
+}
+
 interface EmbeddingResponse {
   data?: Array<{ embedding?: number[] }>
 }
@@ -46,6 +50,9 @@ export class LlmGateway {
   private async completeWithConfig(model: RuntimeModel | undefined, messages: LlmMessage[], fallback: string, maxTokens: number): Promise<string> {
     if (!model?.endpoint) return fallback
     try {
+      if (model.provider === "claudecode") {
+        return await this.completeWithAnthropic(model, messages, fallback, maxTokens)
+      }
       const response = await fetch(this.chatUrl(model.endpoint), {
         method: "POST",
         headers: this.headers(model.apiKey ?? ""),
@@ -71,6 +78,42 @@ export class LlmGateway {
     } catch (err) {
       return `${fallback}\n\n> LLM fallback used because provider call failed: ${err instanceof Error ? err.message : String(err)}`
     }
+  }
+
+  private async completeWithAnthropic(model: RuntimeModel, messages: LlmMessage[], fallback: string, maxTokens: number): Promise<string> {
+    const system = messages.filter((message) => message.role === "system").map((message) => this.textFromMessage(message)).join("\n\n")
+    const conversation = messages.filter((message) => message.role !== "system")
+    const response = await fetch(this.anthropicUrl(model.endpoint), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "anthropic-version": "2023-06-01",
+        ...(model.apiKey ? { "x-api-key": model.apiKey } : {}),
+      },
+      body: JSON.stringify({
+        model: model.model,
+        max_tokens: maxTokens,
+        system: system || undefined,
+        messages: conversation.map((message) => ({
+          role: message.role === "assistant" ? "assistant" : "user",
+          content: Array.isArray(message.content)
+            ? message.content.map((block) =>
+                block.type === "text"
+                  ? { type: "text", text: block.text }
+                  : { type: "image", source: { type: "base64", media_type: block.mediaType, data: block.dataBase64 } },
+              )
+            : message.content,
+        })),
+      }),
+    })
+    if (!response.ok) throw new Error(`Anthropic HTTP ${response.status}: ${await response.text()}`)
+    const json = (await response.json()) as AnthropicResponse
+    return json.content?.map((item) => item.text ?? "").join("").trim() || fallback
+  }
+
+  private textFromMessage(message: LlmMessage): string {
+    if (typeof message.content === "string") return message.content
+    return message.content.filter((block) => block.type === "text").map((block) => block.text).join("\n")
   }
 
   async captionImage(input: {
@@ -167,8 +210,8 @@ export class LlmGateway {
     const embedding = companyId ? await this.resolveModel(companyId, "embedding") : this.envModel("embedding")
     const vision = companyId ? await this.resolveModel(companyId, "vision") : this.envModel("vision")
     return {
-      chatConfigured: Boolean(llm?.endpoint),
-      embeddingConfigured: Boolean(embedding?.endpoint),
+      chatConfigured: this.isConfigured(llm),
+      embeddingConfigured: this.isConfigured(embedding),
       model: llm?.model ?? this.chatModel,
       embeddingModel: embedding?.model ?? this.embeddingModel,
       visionModel: vision?.model ?? llm?.model ?? this.chatModel,
@@ -183,6 +226,7 @@ export class LlmGateway {
 
   private toRuntimeModel(model: CompanyModel): RuntimeModel {
     return {
+      provider: model.provider,
       endpoint: model.endpoint,
       apiKey: model.apiKey,
       model: model.model,
@@ -191,21 +235,28 @@ export class LlmGateway {
 
   private envModel(capability: "llm" | "embedding" | "vision"): RuntimeModel | undefined {
     if (capability === "embedding") {
-      return { endpoint: this.embeddingEndpoint, apiKey: this.embeddingApiKey, model: this.embeddingModel }
+      return { provider: "custom", endpoint: this.embeddingEndpoint, apiKey: this.embeddingApiKey, model: this.embeddingModel }
     }
-    return { endpoint: this.chatEndpoint, apiKey: this.chatApiKey, model: this.chatModel }
+    return { provider: "custom", endpoint: this.chatEndpoint, apiKey: this.chatApiKey, model: this.chatModel }
   }
 
   private chatUrl(endpoint: string): string {
-    return endpoint.endsWith("/chat/completions")
-      ? endpoint
-      : `${endpoint.replace(/\/$/, "")}/v1/chat/completions`
+    const clean = endpoint.replace(/\/+$/, "")
+    if (clean.endsWith("/chat/completions")) return clean
+    if (clean.endsWith("/v1")) return `${clean}/chat/completions`
+    return `${clean}/v1/chat/completions`
   }
 
   private embeddingUrl(endpoint: string): string {
-    return endpoint.endsWith("/embeddings")
-      ? endpoint
-      : `${endpoint.replace(/\/$/, "")}/v1/embeddings`
+    const clean = endpoint.replace(/\/+$/, "")
+    if (clean.endsWith("/embeddings")) return clean
+    if (clean.endsWith("/v1")) return `${clean}/embeddings`
+    return `${clean}/v1/embeddings`
+  }
+
+  private anthropicUrl(endpoint: string): string {
+    const clean = endpoint.replace(/\/+$/, "")
+    return clean.endsWith("/messages") ? clean : `${clean}/v1/messages`
   }
 
   private headers(apiKey: string): Record<string, string> {
@@ -214,9 +265,16 @@ export class LlmGateway {
       ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
     }
   }
+
+  private isConfigured(model: RuntimeModel | undefined): boolean {
+    if (!model?.endpoint) return false
+    if (model.provider === "ollama" || model.provider === "custom") return true
+    return Boolean(model.apiKey)
+  }
 }
 
 interface RuntimeModel {
+  provider: CompanyModel["provider"]
   endpoint: string
   apiKey?: string
   model: string

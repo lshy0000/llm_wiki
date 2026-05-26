@@ -25,6 +25,7 @@ export interface AuthPayload {
     id: string
     name: string
     slug: string
+    isDefault: boolean
   }
 }
 
@@ -101,6 +102,7 @@ export class AuthService {
         id: auth.company.id,
         name: auth.company.name,
         slug: auth.company.slug,
+        isDefault: auth.company.isDefault,
       },
     }
   }
@@ -130,6 +132,7 @@ export class AuthService {
         id: company.id,
         name: company.name,
         slug: company.slug,
+        isDefault: company.isDefault,
       },
     }
   }

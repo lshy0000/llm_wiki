@@ -37,6 +37,16 @@ export interface AppServices {
   llm: LlmGateway
 }
 
+const MODEL_PROVIDER_PRESETS: Record<CompanyModel["provider"], { endpoint: string; protocol: "openai" | "anthropic" }> = {
+  openai: { endpoint: "https://api.openai.com/v1", protocol: "openai" },
+  qwen: { endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1", protocol: "openai" },
+  deepseek: { endpoint: "https://api.deepseek.com/v1", protocol: "openai" },
+  kimi: { endpoint: "https://api.moonshot.cn/v1", protocol: "openai" },
+  claudecode: { endpoint: "https://api.anthropic.com", protocol: "anthropic" },
+  ollama: { endpoint: "http://localhost:11434/v1", protocol: "openai" },
+  custom: { endpoint: "", protocol: "openai" },
+}
+
 export async function buildApp(dataDir = path.resolve(process.cwd(), ".kn-data")): Promise<{
   app: FastifyInstance
   services: AppServices
@@ -151,18 +161,22 @@ function registerRoutes(app: FastifyInstance, services: AppServices): void {
     const modelName = body.model?.trim()
     if (!name || !modelName) return reply.code(400).send({ error: "name and model are required" })
     const now = nowIso()
+    const provider = normalizeProvider(body.provider)
+    const endpoint = normalizeModelEndpoint(provider, body.endpoint)
+    if (provider === "custom" && !endpoint) return reply.code(400).send({ error: "custom model endpoint is required" })
+    const capabilities = normalizeModelCapabilities(body.capabilities)
     const model: CompanyModel = {
       id: body.id || id("mdl"),
       companyId: auth.company.id,
       name,
-      provider: normalizeProvider(body.provider),
+      provider,
       model: modelName,
-      endpoint: body.endpoint?.trim() ?? "",
+      endpoint,
       apiKey: body.apiKey?.trim() || undefined,
-      capabilities: normalizeModelCapabilities(body.capabilities),
-      isDefaultLlm: Boolean(body.isDefaultLlm),
-      isDefaultEmbedding: Boolean(body.isDefaultEmbedding),
-      isDefaultVision: Boolean(body.isDefaultVision),
+      capabilities,
+      isDefaultLlm: Boolean(body.isDefaultLlm) && capabilities.includes("llm"),
+      isDefaultEmbedding: Boolean(body.isDefaultEmbedding) && capabilities.includes("embedding"),
+      isDefaultVision: Boolean(body.isDefaultVision) && capabilities.includes("vision"),
       createdAt: now,
       updatedAt: now,
     }
@@ -172,7 +186,7 @@ function registerRoutes(app: FastifyInstance, services: AppServices): void {
   app.get("/api/kbs", async (request, reply) => {
     const auth = await requireAuth(request, reply, services)
     if (!auth) return
-    return services.project.listKnowledgeBases(auth.company.id, auth.identity.id)
+    return services.project.listKnowledgeBases(isPlatformAdmin(auth) ? undefined : auth.company.id, isPlatformAdmin(auth) ? undefined : auth.identity.id)
   })
   app.post<{ Body: { name?: string; description?: string; visibility?: "company" | "creator_only" } }>("/api/kbs", async (request, reply) => {
     const auth = await requireAuth(request, reply, services)
@@ -369,7 +383,11 @@ function tokenFromRequest(request: FastifyRequest): string | undefined {
 }
 
 function isCompanyAdmin(auth: AuthContext): boolean {
-  return auth.identity.isPlatformAdmin || auth.member.role === "platform_admin" || auth.member.role === "org_admin"
+  return isPlatformAdmin(auth) || auth.member.role === "org_admin"
+}
+
+function isPlatformAdmin(auth: AuthContext): boolean {
+  return auth.identity.isPlatformAdmin || auth.member.role === "platform_admin"
 }
 
 function sanitizeCompanyModel(model: CompanyModel): Omit<CompanyModel, "apiKey"> & { apiKeySet: boolean } {
@@ -383,6 +401,12 @@ function normalizeProvider(provider?: string): CompanyModel["provider"] {
     return value as CompanyModel["provider"]
   }
   return "custom"
+}
+
+function normalizeModelEndpoint(provider: CompanyModel["provider"], endpoint?: string): string {
+  const raw = endpoint?.trim() ?? ""
+  if (provider === "custom") return raw
+  return MODEL_PROVIDER_PRESETS[provider]?.endpoint ?? raw
 }
 
 function normalizeModelCapabilities(capabilities?: string[]): CompanyModel["capabilities"] {
@@ -413,7 +437,7 @@ async function getCompanyKnowledgeBase(
   reply: FastifyReply,
 ): Promise<KnowledgeBase | undefined> {
   const kb = await services.project.getKnowledgeBase(kbId).catch(() => undefined)
-  if (!kb || kb.companyId !== auth.company.id || (kb.visibility === "creator_only" && kb.createdBy !== auth.identity.id)) {
+  if (!kb || (!isPlatformAdmin(auth) && (kb.companyId !== auth.company.id || (kb.visibility === "creator_only" && kb.createdBy !== auth.identity.id)))) {
     reply.code(404).send({ error: "Knowledge base not found" })
     return undefined
   }
@@ -432,7 +456,7 @@ async function verifyJobCompany(
     return false
   }
   const kb = await services.repo.getKnowledgeBase(job.kbId)
-  if (!kb || kb.companyId !== auth.company.id || (kb.visibility === "creator_only" && kb.createdBy !== auth.identity.id)) {
+  if (!kb || (!isPlatformAdmin(auth) && (kb.companyId !== auth.company.id || (kb.visibility === "creator_only" && kb.createdBy !== auth.identity.id)))) {
     reply.code(404).send({ error: "Job not found" })
     return false
   }

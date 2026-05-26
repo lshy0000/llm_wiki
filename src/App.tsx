@@ -46,6 +46,7 @@ import type {
   GraphResponse,
   IngestJob,
   KnowledgeBase,
+  ModelCapability,
   ReviewItem,
   SearchResult,
   SourceDocument,
@@ -68,6 +69,86 @@ type AppRoute =
   | { page: "detail"; kbId: string }
   | { page: "extensions" }
   | { page: "companySettings" }
+
+type ModelProviderPreset = {
+  provider: CompanyModel["provider"]
+  label: string
+  protocol: "OpenAI 兼容" | "Anthropic 兼容"
+  endpoint: string
+  defaultModel: string
+  defaultCapabilities: CompanyModel["capabilities"]
+  description: string
+}
+
+const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
+  {
+    provider: "openai",
+    label: "OpenAI",
+    protocol: "OpenAI 兼容",
+    endpoint: "https://api.openai.com/v1",
+    defaultModel: "gpt-4o-mini",
+    defaultCapabilities: ["llm", "vision"],
+    description: "官方 OpenAI API，适合 LLM 和视觉模型。",
+  },
+  {
+    provider: "qwen",
+    label: "千问 DashScope",
+    protocol: "OpenAI 兼容",
+    endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    defaultModel: "qwen-plus",
+    defaultCapabilities: ["llm", "vision"],
+    description: "阿里云百炼兼容模式，填写 DashScope API Key 和模型名。",
+  },
+  {
+    provider: "deepseek",
+    label: "DeepSeek",
+    protocol: "OpenAI 兼容",
+    endpoint: "https://api.deepseek.com/v1",
+    defaultModel: "deepseek-chat",
+    defaultCapabilities: ["llm"],
+    description: "DeepSeek 官方 OpenAI 兼容端点。",
+  },
+  {
+    provider: "kimi",
+    label: "Kimi / Moonshot",
+    protocol: "OpenAI 兼容",
+    endpoint: "https://api.moonshot.cn/v1",
+    defaultModel: "kimi-k2.6",
+    defaultCapabilities: ["llm"],
+    description: "月之暗面 Moonshot 兼容端点。",
+  },
+  {
+    provider: "claudecode",
+    label: "Claude / Anthropic",
+    protocol: "Anthropic 兼容",
+    endpoint: "https://api.anthropic.com",
+    defaultModel: "claude-sonnet-4-5-20250929",
+    defaultCapabilities: ["llm", "vision"],
+    description: "Anthropic Messages 协议，填写 Anthropic API Key 和 Claude 模型名。",
+  },
+  {
+    provider: "ollama",
+    label: "Ollama",
+    protocol: "OpenAI 兼容",
+    endpoint: "http://localhost:11434/v1",
+    defaultModel: "llama3.1",
+    defaultCapabilities: ["llm"],
+    description: "本地 Ollama OpenAI 兼容端点，通常不需要 API Key。",
+  },
+  {
+    provider: "custom",
+    label: "自定义",
+    protocol: "OpenAI 兼容",
+    endpoint: "",
+    defaultModel: "",
+    defaultCapabilities: ["llm"],
+    description: "自定义 OpenAI 兼容服务，需要填写 Base URL。",
+  },
+]
+
+function modelProviderPreset(provider: CompanyModel["provider"]): ModelProviderPreset {
+  return MODEL_PROVIDER_PRESETS.find((preset) => preset.provider === provider) ?? MODEL_PROVIDER_PRESETS[MODEL_PROVIDER_PRESETS.length - 1]
+}
 
 function App() {
   const [auth, setAuth] = useState<AuthPayload | null>(null)
@@ -832,16 +913,14 @@ function CompanySettingsPage({ auth, capabilities }: { auth: AuthPayload; capabi
     name: "公司默认 LLM",
     provider: "openai" as CompanyModel["provider"],
     model: capabilities?.providers.model || "gpt-4o-mini",
-    endpoint: "",
+    endpoint: modelProviderPreset("openai").endpoint,
     apiKey: "",
     llm: true,
     embedding: false,
     vision: true,
-    defaultLlm: true,
-    defaultEmbedding: false,
-    defaultVision: true,
   })
   const searchProviders = Object.entries(capabilities?.searchProviders ?? {}).filter(([, enabled]) => enabled).map(([name]) => name)
+  const selectedProviderPreset = modelProviderPreset(modelForm.provider)
   useEffect(() => {
     if (!isAdmin) return
     void api.companyModels()
@@ -857,19 +936,47 @@ function CompanySettingsPage({ auth, capabilities }: { auth: AuthPayload; capabi
       if (modelForm.llm) capabilities.push("llm")
       if (modelForm.embedding) capabilities.push("embedding")
       if (modelForm.vision) capabilities.push("vision")
+      const endpoint = modelForm.provider === "custom" ? modelForm.endpoint.trim() : modelProviderPreset(modelForm.provider).endpoint
       const saved = await api.saveCompanyModel({
         name: modelForm.name,
         provider: modelForm.provider,
         model: modelForm.model,
-        endpoint: modelForm.endpoint,
+        endpoint,
         apiKey: modelForm.apiKey || undefined,
         capabilities,
-        isDefaultLlm: modelForm.defaultLlm,
-        isDefaultEmbedding: modelForm.defaultEmbedding,
-        isDefaultVision: modelForm.defaultVision,
       })
       setModels((items) => [saved, ...items.filter((item) => item.id !== saved.id)])
       setModelForm((form) => ({ ...form, apiKey: "" }))
+    } catch (err) {
+      setModelError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setModelBusy(false)
+    }
+  }
+
+  const saveDefaultModel = async (capability: ModelCapability, modelId: string) => {
+    const target = models.find((model) => model.id === modelId)
+    if (!target) return
+    setModelBusy(true)
+    setModelError(null)
+    try {
+      const saved = await api.saveCompanyModel({
+        id: target.id,
+        name: target.name,
+        provider: target.provider,
+        model: target.model,
+        endpoint: target.endpoint,
+        capabilities: target.capabilities,
+        isDefaultLlm: capability === "llm" ? true : target.isDefaultLlm,
+        isDefaultEmbedding: capability === "embedding" ? true : target.isDefaultEmbedding,
+        isDefaultVision: capability === "vision" ? true : target.isDefaultVision,
+      })
+      setModels((items) => items.map((item) => {
+        if (item.id === saved.id) return saved
+        if (capability === "llm") return { ...item, isDefaultLlm: false }
+        if (capability === "embedding") return { ...item, isDefaultEmbedding: false }
+        return { ...item, isDefaultVision: false }
+      }))
     } catch (err) {
       setModelError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -929,6 +1036,12 @@ function CompanySettingsPage({ auth, capabilities }: { auth: AuthPayload; capabi
           : <Bot className="h-4 w-4" />,
     }))
     : modelRows
+  const llmModels = models.filter((model) => model.capabilities.includes("llm"))
+  const embeddingModels = models.filter((model) => model.capabilities.includes("embedding"))
+  const visionModels = models.filter((model) => model.capabilities.includes("vision"))
+  const defaultLlm = models.find((model) => model.isDefaultLlm)
+  const defaultEmbedding = models.find((model) => model.isDefaultEmbedding)
+  const defaultVision = models.find((model) => model.isDefaultVision)
 
   if (!isAdmin) {
     return (
@@ -966,7 +1079,7 @@ function CompanySettingsPage({ auth, capabilities }: { auth: AuthPayload; capabi
             <dl className="mt-4 space-y-3 text-sm">
               <div>
                 <dt className="text-xs text-neutral-500">默认公司</dt>
-                <dd className="mt-1 font-medium">{auth.company.slug === "default" ? "是，LDAP 用户默认进入" : "否"}</dd>
+                <dd className="mt-1 font-medium">{auth.company.isDefault ? "是，LDAP 用户默认进入" : "否"}</dd>
               </div>
               <div>
                 <dt className="text-xs text-neutral-500">当前身份</dt>
@@ -1001,9 +1114,30 @@ function CompanySettingsPage({ auth, capabilities }: { auth: AuthPayload; capabi
 
         <div className="min-w-0 space-y-4">
           <section className="grid grid-cols-3 gap-4">
-            <DefaultModelCard title="默认 LLM" value={capabilities?.providers.model || "未配置"} active={Boolean(capabilities?.providers.chatConfigured)} />
-            <DefaultModelCard title="默认 Embedding" value={capabilities?.providers.embeddingModel || "未配置"} active={Boolean(capabilities?.providers.embeddingConfigured)} />
-            <DefaultModelCard title="默认视觉模型" value={capabilities?.providers.model || "继承 LLM"} active={Boolean(capabilities?.providers.chatConfigured)} />
+            <DefaultModelCard
+              title="默认 LLM"
+              models={llmModels}
+              selectedId={defaultLlm?.id ?? ""}
+              placeholder="选择 LLM 模型"
+              busy={modelBusy}
+              onChange={(modelId) => void saveDefaultModel("llm", modelId)}
+            />
+            <DefaultModelCard
+              title="默认 Embedding"
+              models={embeddingModels}
+              selectedId={defaultEmbedding?.id ?? ""}
+              placeholder="选择 Embedding 模型"
+              busy={modelBusy}
+              onChange={(modelId) => void saveDefaultModel("embedding", modelId)}
+            />
+            <DefaultModelCard
+              title="默认视觉模型"
+              models={visionModels}
+              selectedId={defaultVision?.id ?? ""}
+              placeholder="选择视觉模型"
+              busy={modelBusy}
+              onChange={(modelId) => void saveDefaultModel("vision", modelId)}
+            />
           </section>
 
           <section className="overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-sm">
@@ -1027,7 +1161,7 @@ function CompanySettingsPage({ auth, capabilities }: { auth: AuthPayload; capabi
                   </div>
                   <div className="truncate text-neutral-600">{row.provider}</div>
                   <div>
-                    <span className={`rounded px-2 py-1 text-xs ${row.status === "可用" || row.status === "继承 LLM" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+                    <span className={`rounded px-2 py-1 text-xs ${row.status === "可用" || row.status === "继承 LLM" || row.status.includes("默认") ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
                       {row.status}
                     </span>
                   </div>
@@ -1044,7 +1178,7 @@ function CompanySettingsPage({ auth, capabilities }: { auth: AuthPayload; capabi
               </div>
               <button
                 className="inline-flex h-9 items-center gap-2 rounded-md bg-cyan-700 px-3 text-sm font-medium text-white disabled:opacity-50"
-                disabled={modelBusy || !modelForm.name.trim() || !modelForm.model.trim()}
+                disabled={modelBusy || !modelForm.name.trim() || !modelForm.model.trim() || (modelForm.provider === "custom" && !modelForm.endpoint.trim()) || (!modelForm.llm && !modelForm.embedding && !modelForm.vision)}
                 onClick={() => void saveModel()}
               >
                 <Plus className="h-4 w-4" />
@@ -1057,9 +1191,25 @@ function CompanySettingsPage({ auth, capabilities }: { auth: AuthPayload; capabi
                 <input className="h-9 w-full rounded-md border border-neutral-200 px-3 text-sm outline-none focus:border-cyan-600" value={modelForm.name} onChange={(event) => setModelForm((form) => ({ ...form, name: event.target.value }))} />
               </Field>
               <Field label="供应商">
-                <select className="h-9 w-full rounded-md border border-neutral-200 px-3 text-sm outline-none focus:border-cyan-600" value={modelForm.provider} onChange={(event) => setModelForm((form) => ({ ...form, provider: event.target.value as CompanyModel["provider"] }))}>
-                  {["openai", "qwen", "deepseek", "kimi", "claudecode", "ollama", "custom"].map((provider) => (
-                    <option key={provider} value={provider}>{provider}</option>
+                <select
+                  className="h-9 w-full rounded-md border border-neutral-200 px-3 text-sm outline-none focus:border-cyan-600"
+                  value={modelForm.provider}
+                  onChange={(event) => {
+                    const provider = event.target.value as CompanyModel["provider"]
+                    const preset = modelProviderPreset(provider)
+                    setModelForm((form) => ({
+                      ...form,
+                      provider,
+                      endpoint: provider === "custom" ? "" : preset.endpoint,
+                      model: !form.model.trim() || MODEL_PROVIDER_PRESETS.some((item) => item.defaultModel === form.model) ? preset.defaultModel : form.model,
+                      llm: preset.defaultCapabilities.includes("llm"),
+                      embedding: preset.defaultCapabilities.includes("embedding"),
+                      vision: preset.defaultCapabilities.includes("vision"),
+                    }))
+                  }}
+                >
+                  {MODEL_PROVIDER_PRESETS.map((preset) => (
+                    <option key={preset.provider} value={preset.provider}>{preset.label}</option>
                   ))}
                 </select>
               </Field>
@@ -1069,9 +1219,18 @@ function CompanySettingsPage({ auth, capabilities }: { auth: AuthPayload; capabi
               <Field label="API Key">
                 <input className="h-9 w-full rounded-md border border-neutral-200 px-3 text-sm outline-none focus:border-cyan-600" value={modelForm.apiKey} onChange={(event) => setModelForm((form) => ({ ...form, apiKey: event.target.value }))} placeholder="留空则保留旧密钥" type="password" />
               </Field>
-              <Field label="OpenAI 兼容 Endpoint">
-                <input className="h-9 w-full rounded-md border border-neutral-200 px-3 text-sm outline-none focus:border-cyan-600" value={modelForm.endpoint} onChange={(event) => setModelForm((form) => ({ ...form, endpoint: event.target.value }))} placeholder="https://... 或 http://localhost:11434" />
-              </Field>
+              {modelForm.provider === "custom" ? (
+                <Field label="Base URL">
+                  <input className="h-9 w-full rounded-md border border-neutral-200 px-3 text-sm outline-none focus:border-cyan-600" value={modelForm.endpoint} onChange={(event) => setModelForm((form) => ({ ...form, endpoint: event.target.value }))} placeholder="https://.../v1 或 http://localhost:11434/v1" />
+                </Field>
+              ) : (
+                <Field label="协议端点">
+                  <div className="flex h-9 items-center rounded-md border border-neutral-200 bg-neutral-50 px-3 text-xs text-neutral-600">
+                    <span className="mr-2 rounded bg-white px-1.5 py-0.5 text-[11px] text-cyan-700">{selectedProviderPreset.protocol}</span>
+                    <span className="truncate">{selectedProviderPreset.endpoint}</span>
+                  </div>
+                </Field>
+              )}
               <Field label="能力">
                 <div className="flex h-9 items-center gap-3 text-sm">
                   <CheckBox label="LLM" checked={modelForm.llm} onChange={(checked) => setModelForm((form) => ({ ...form, llm: checked }))} />
@@ -1079,13 +1238,9 @@ function CompanySettingsPage({ auth, capabilities }: { auth: AuthPayload; capabi
                   <CheckBox label="Vision" checked={modelForm.vision} onChange={(checked) => setModelForm((form) => ({ ...form, vision: checked }))} />
                 </div>
               </Field>
-              <Field label="默认角色">
-                <div className="flex h-9 items-center gap-3 text-sm">
-                  <CheckBox label="LLM" checked={modelForm.defaultLlm} onChange={(checked) => setModelForm((form) => ({ ...form, defaultLlm: checked }))} />
-                  <CheckBox label="Embedding" checked={modelForm.defaultEmbedding} onChange={(checked) => setModelForm((form) => ({ ...form, defaultEmbedding: checked }))} />
-                  <CheckBox label="Vision" checked={modelForm.defaultVision} onChange={(checked) => setModelForm((form) => ({ ...form, defaultVision: checked }))} />
-                </div>
-              </Field>
+              <div className="flex min-w-0 items-end text-xs leading-5 text-neutral-500">
+                {selectedProviderPreset.description}
+              </div>
             </div>
           </section>
 
@@ -1100,16 +1255,45 @@ function CompanySettingsPage({ auth, capabilities }: { auth: AuthPayload; capabi
   )
 }
 
-function DefaultModelCard({ title, value, active }: { title: string; value: string; active: boolean }) {
+function DefaultModelCard({
+  title,
+  models,
+  selectedId,
+  placeholder,
+  busy,
+  onChange,
+}: {
+  title: string
+  models: CompanyModel[]
+  selectedId: string
+  placeholder: string
+  busy: boolean
+  onChange: (modelId: string) => void
+}) {
+  const selected = models.find((model) => model.id === selectedId)
+  const ready = Boolean(selected?.endpoint && (selected.apiKeySet || selected.provider === "ollama" || selected.provider === "custom"))
   return (
     <article className="rounded-lg border border-neutral-200 bg-white p-4 shadow-sm">
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-semibold">{title}</h3>
-        <span className={`rounded px-2 py-1 text-xs ${active ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
-          {active ? "可用" : "待配置"}
+        <span className={`rounded px-2 py-1 text-xs ${ready ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>
+          {ready ? "已配置" : "待配置"}
         </span>
       </div>
-      <p className="mt-3 truncate text-sm text-neutral-600">{value}</p>
+      <select
+        className="mt-3 h-9 w-full rounded-md border border-neutral-200 bg-white px-3 text-sm outline-none focus:border-cyan-600 disabled:opacity-60"
+        value={selectedId}
+        disabled={busy || models.length === 0}
+        onChange={(event) => event.target.value && onChange(event.target.value)}
+      >
+        <option value="">{models.length === 0 ? "暂无可选模型" : placeholder}</option>
+        {models.map((model) => (
+          <option key={model.id} value={model.id}>{model.name} · {model.model}</option>
+        ))}
+      </select>
+      <p className="mt-2 truncate text-xs text-neutral-500">
+        {selected ? `${modelProviderPreset(selected.provider).label} · ${selected.endpoint || "端点未配置"}` : "先在模型池添加支持该能力的模型"}
+      </p>
     </article>
   )
 }

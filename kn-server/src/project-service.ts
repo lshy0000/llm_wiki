@@ -40,7 +40,7 @@ export class ProjectService {
     return (await this.repo.getKnowledgeBase(kb.id)) ?? kb
   }
 
-  async listKnowledgeBases(companyId: string, identityId: string): Promise<KnowledgeBase[]> {
+  async listKnowledgeBases(companyId?: string, identityId?: string): Promise<KnowledgeBase[]> {
     return this.repo.listKnowledgeBases(companyId, identityId)
   }
 

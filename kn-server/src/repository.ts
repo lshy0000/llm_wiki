@@ -24,6 +24,17 @@ import type {
 import { id, nowIso } from "./wiki-utils.js"
 
 const { Pool } = pg
+const DEFAULT_COMPANY_NAME = "祥承科技"
+const DEFAULT_COMPANY_SLUG = "xiangcheng-tech"
+const DEFAULT_PROVIDER_ENDPOINTS: Record<CompanyModel["provider"], string> = {
+  openai: "https://api.openai.com/v1",
+  qwen: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  deepseek: "https://api.deepseek.com/v1",
+  kimi: "https://api.moonshot.cn/v1",
+  claudecode: "https://api.anthropic.com",
+  ollama: "http://localhost:11434/v1",
+  custom: "",
+}
 
 export interface KnowledgeRepository {
   init(): Promise<void>
@@ -131,7 +142,7 @@ function providerFromModel(model: string, endpoint: string): CompanyModel["provi
   if (value.includes("kimi") || value.includes("moonshot")) return "kimi"
   if (value.includes("claude") || value.includes("anthropic")) return "claudecode"
   if (value.includes("ollama") || endpoint.includes("11434")) return "ollama"
-  if (value.includes("openai") || value.includes("gpt-")) return "openai"
+  if (value.includes("openai") || value.includes("gpt-") || value.includes("text-embedding-3")) return "openai"
   return "custom"
 }
 
@@ -164,12 +175,13 @@ export class PostgresRepository implements KnowledgeRepository {
 
   async ensureDefaultCompany(): Promise<Company> {
     const existing = await this.pool.query<Row>("SELECT * FROM companies WHERE is_default = TRUE LIMIT 1")
+    const desiredName = process.env.KN_DEFAULT_COMPANY_NAME?.trim() || DEFAULT_COMPANY_NAME
+    const desiredSlug = process.env.KN_DEFAULT_COMPANY_SLUG?.trim() || DEFAULT_COMPANY_SLUG
     if (existing.rows[0]) {
-      const desiredName = process.env.KN_DEFAULT_COMPANY_NAME ?? "Default"
-      if (String(existing.rows[0].name) !== desiredName) {
+      if (String(existing.rows[0].name) !== desiredName || String(existing.rows[0].slug) !== desiredSlug) {
         const updated = await this.pool.query<Row>(
-          "UPDATE companies SET name = $1, updated_at = $2 WHERE id = $3 RETURNING *",
-          [desiredName, nowIso(), existing.rows[0].id],
+          "UPDATE companies SET name = $1, slug = $2, updated_at = $3 WHERE id = $4 RETURNING *",
+          [desiredName, desiredSlug, nowIso(), existing.rows[0].id],
         )
         return this.mapCompany(updated.rows[0])
       }
@@ -180,9 +192,9 @@ export class PostgresRepository implements KnowledgeRepository {
     const inserted = await this.pool.query<Row>(
       `INSERT INTO companies (id, name, slug, is_default, created_at, updated_at)
        VALUES ($1, $2, $3, TRUE, $4, $4)
-       ON CONFLICT (slug) DO UPDATE SET is_default = TRUE, updated_at = EXCLUDED.updated_at
+       ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name, is_default = TRUE, updated_at = EXCLUDED.updated_at
        RETURNING *`,
-      [id("cmp"), process.env.KN_DEFAULT_COMPANY_NAME ?? "Default", "default", now],
+      [id("cmp"), desiredName, desiredSlug, now],
     )
     return this.mapCompany(inserted.rows[0])
   }
@@ -194,14 +206,15 @@ export class PostgresRepository implements KnowledgeRepository {
     const chatEndpoint = process.env.KN_LLM_ENDPOINT ?? process.env.LLM_ENDPOINT ?? ""
     const chatModel = process.env.KN_LLM_MODEL ?? process.env.LLM_MODEL ?? "gpt-4o-mini"
     const chatApiKey = process.env.KN_LLM_API_KEY ?? process.env.LLM_API_KEY ?? ""
+    const chatProvider = providerFromModel(chatModel, chatEndpoint)
     const chatNow = nowIso()
     await this.saveCompanyModel({
       id: id("mdl"),
       companyId,
       name: "默认 LLM / Vision",
-      provider: providerFromModel(chatModel, chatEndpoint),
+      provider: chatProvider,
       model: chatModel,
-      endpoint: chatEndpoint,
+      endpoint: chatEndpoint || DEFAULT_PROVIDER_ENDPOINTS[chatProvider],
       apiKey: chatApiKey || undefined,
       capabilities: ["llm", "vision"],
       isDefaultLlm: true,
@@ -214,14 +227,15 @@ export class PostgresRepository implements KnowledgeRepository {
     const embeddingEndpoint = process.env.KN_EMBEDDING_ENDPOINT ?? process.env.KN_LLM_ENDPOINT ?? ""
     const embeddingModel = process.env.KN_EMBEDDING_MODEL ?? "text-embedding-3-small"
     const embeddingApiKey = process.env.KN_EMBEDDING_API_KEY ?? chatApiKey
+    const embeddingProvider = providerFromModel(embeddingModel, embeddingEndpoint)
     const embeddingNow = nowIso()
     await this.saveCompanyModel({
       id: id("mdl"),
       companyId,
       name: "默认 Embedding",
-      provider: providerFromModel(embeddingModel, embeddingEndpoint),
+      provider: embeddingProvider,
       model: embeddingModel,
-      endpoint: embeddingEndpoint,
+      endpoint: embeddingEndpoint || DEFAULT_PROVIDER_ENDPOINTS[embeddingProvider],
       apiKey: embeddingApiKey || undefined,
       capabilities: ["embedding"],
       isDefaultLlm: false,
@@ -395,7 +409,13 @@ export class PostgresRepository implements KnowledgeRepository {
       `INSERT INTO company_members (id, company_id, identity_id, role, status, joined_at, updated_at)
        VALUES ($1, $2, $3, $4, 'active', $5, $5)
        ON CONFLICT (company_id, identity_id)
-       DO UPDATE SET updated_at = EXCLUDED.updated_at
+       DO UPDATE SET role = CASE
+                              WHEN company_members.role = 'platform_admin' OR EXCLUDED.role = 'platform_admin' THEN 'platform_admin'
+                              WHEN company_members.role = 'org_admin' OR EXCLUDED.role = 'org_admin' THEN 'org_admin'
+                              WHEN company_members.role = 'agent_admin' OR EXCLUDED.role = 'agent_admin' THEN 'agent_admin'
+                              ELSE 'member'
+                            END,
+                     updated_at = EXCLUDED.updated_at
        RETURNING *`,
       [id("mem"), companyId, identityId, role, now],
     )

@@ -25,6 +25,7 @@ export interface AuthPayload {
     id: string
     name: string
     slug: string
+    isDefault: boolean
   }
 }
 
