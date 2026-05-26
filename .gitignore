@@ -47,6 +47,9 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# Local KN server data
+.kn-data/
+
 # Brainstorm assets (not tracked in source control)
 .superpowers/
 .claude/

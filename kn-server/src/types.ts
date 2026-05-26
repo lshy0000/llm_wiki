@@ -1,0 +1,185 @@
+export type JobStatus = "queued" | "running" | "completed" | "failed" | "cancelled"
+export type SourceStatus = "uploaded" | "parsing" | "queued" | "ingested" | "failed"
+export type ReviewStatus = "open" | "resolved" | "dismissed"
+
+export interface KnowledgeBase {
+  id: string
+  name: string
+  description: string
+  createdAt: string
+  updatedAt: string
+  dataVersion: number
+}
+
+export interface SourceDocument {
+  id: string
+  kbId: string
+  fileName: string
+  relativePath: string
+  storageKey: string
+  contentType: string
+  size: number
+  sha256: string
+  status: SourceStatus
+  folderContext: string
+  createdAt: string
+  updatedAt: string
+  error?: string
+}
+
+export interface IngestJob {
+  id: string
+  kbId: string
+  sourceId: string
+  status: JobStatus
+  progress: number
+  stage: string
+  attempts: number
+  cached: boolean
+  createdAt: string
+  updatedAt: string
+  startedAt?: string
+  completedAt?: string
+  cancelledAt?: string
+  error?: string
+  writtenPageIds: string[]
+  analysis?: string
+}
+
+export interface WikiPage {
+  id: string
+  kbId: string
+  path: string
+  title: string
+  type: string
+  content: string
+  sha256: string
+  sources: string[]
+  images: ImageAsset[]
+  createdAt: string
+  updatedAt: string
+}
+
+export interface WikiLink {
+  kbId: string
+  sourcePageId: string
+  targetPageId: string
+  targetRaw: string
+}
+
+export interface PageSource {
+  kbId: string
+  pageId: string
+  sourceId: string
+}
+
+export interface PageChunk {
+  id: string
+  kbId: string
+  pageId: string
+  text: string
+  ordinal: number
+  tokens: string[]
+  embedding?: number[]
+}
+
+export interface ImageAsset {
+  id: string
+  kbId: string
+  sourceId: string
+  pageId?: string
+  storageKey: string
+  fileName: string
+  mediaType: string
+  caption: string
+  origin: "pdf-embedded" | "markdown-image" | "standalone-image"
+  sourcePage?: number
+  createdAt: string
+}
+
+export interface ReviewItem {
+  id: string
+  kbId: string
+  sourceId?: string
+  pageId?: string
+  kind: "llm-review" | "lint" | "graph-insight" | "deep-research"
+  title: string
+  description: string
+  action?: string
+  query?: string
+  status: ReviewStatus
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ChatMessage {
+  id: string
+  kbId: string
+  conversationId: string
+  role: "user" | "assistant"
+  content: string
+  citations: Array<{ pageId: string; title: string; path: string }>
+  createdAt: string
+}
+
+export interface SearchResult {
+  pageId: string
+  path: string
+  title: string
+  snippet: string
+  score: number
+  keywordScore: number
+  vectorScore?: number
+  titleMatch: boolean
+  sources: string[]
+  images: ImageAsset[]
+}
+
+export interface GraphNode {
+  id: string
+  label: string
+  type: string
+  path: string
+  linkCount: number
+  community: number
+}
+
+export interface GraphEdge {
+  source: string
+  target: string
+  weight: number
+  signals: {
+    directLink: number
+    sourceOverlap: number
+    commonNeighbor: number
+    typeAffinity: number
+  }
+}
+
+export interface CommunityInfo {
+  id: number
+  nodeCount: number
+  cohesion: number
+  topNodes: string[]
+}
+
+export interface FileTreeNode {
+  name: string
+  path: string
+  isDirectory: boolean
+  size: number
+  updatedAt: string
+  children?: FileTreeNode[]
+}
+
+export interface ParsedDocument {
+  text: string
+  images: Array<{
+    fileName: string
+    mediaType: string
+    bytes: Buffer
+    origin: ImageAsset["origin"]
+    sourcePage?: number
+  }>
+}
+
