@@ -15,6 +15,7 @@ import {
   ChevronUp,
   ClipboardList,
   Database,
+  Download,
   Eye,
   FileSearch,
   FileText,
@@ -1353,13 +1354,21 @@ function SourcesPanel({ kbId }: { kbId: string }) {
   const openFile = async (root: "raw" | "wiki", node: FileTreeNode) => {
     if (node.isDirectory) return
     const kind = inferFileKind(node.name)
+    const nextFile: FileSelection = {
+      root,
+      path: node.path,
+      name: node.name,
+      kind,
+      imageUrl: kind === "image" ? api.objectUrl(kbId, node.path) : undefined,
+    }
+    setSelectedFile(nextFile)
     setFileLoading(true)
     setFileError(null)
     try {
       if (kind === "image" || kind === "pdf" || kind === "binary") {
-        setSelectedFile({ root, path: node.path, name: node.name, kind, imageUrl: kind === "image" ? api.objectUrl(kbId, node.path) : undefined })
+        setSelectedFile(nextFile)
       } else {
-        setSelectedFile({ root, path: node.path, name: node.name, kind, text: await api.objectText(kbId, node.path) })
+        setSelectedFile({ ...nextFile, text: await api.objectText(kbId, node.path) })
       }
     } catch (err) {
       setFileError(err instanceof Error ? err.message : String(err))
@@ -1400,7 +1409,16 @@ function SourcesPanel({ kbId }: { kbId: string }) {
         <TreePanel title="wiki 规则目录" nodes={wikiTree} selectedPath={selectedFile?.path} onOpenFile={(node) => void openFile("wiki", node)} />
       </section>
 
-      <FilePreviewPanel kbId={kbId} file={selectedFile} loading={fileLoading} error={fileError} />
+      <DocumentPreviewModal
+        kbId={kbId}
+        file={selectedFile}
+        loading={fileLoading}
+        error={fileError}
+        onClose={() => {
+          setSelectedFile(null)
+          setFileError(null)
+        }}
+      />
 
       <section className="max-h-44 shrink-0 overflow-auto border-t border-neutral-100 bg-white">
         <div className="sticky top-0 z-10 border-b border-neutral-100 bg-white px-3 py-2">
@@ -1513,39 +1531,95 @@ function TreeNodeView({
   )
 }
 
-function FilePreviewPanel({ kbId, file, loading, error }: { kbId: string; file: FileSelection | null; loading: boolean; error: string | null }) {
+function DocumentPreviewModal({
+  kbId,
+  file,
+  loading,
+  error,
+  onClose,
+}: {
+  kbId: string
+  file: FileSelection | null
+  loading: boolean
+  error: string | null
+  onClose: () => void
+}) {
+  useEffect(() => {
+    if (!file && !error) return
+    const previousOverflow = document.body.style.overflow
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose()
+    }
+    document.body.style.overflow = "hidden"
+    window.addEventListener("keydown", onKeyDown)
+    return () => {
+      document.body.style.overflow = previousOverflow
+      window.removeEventListener("keydown", onKeyDown)
+    }
+  }, [file, error, onClose])
+
+  if (!file && !error) return null
+  const contentLength = file?.text?.length ?? 0
+  const modeLabel = file?.kind === "markdown" ? "Markdown" : file?.kind === "text" ? "原文" : file?.kind === "image" ? "Image" : file?.kind === "pdf" ? "PDF" : "文件"
+
   return (
-    <section className="max-h-64 shrink-0 overflow-auto border-t border-neutral-100 bg-white">
-      <div className="sticky top-0 z-10 flex items-center justify-between border-b border-neutral-100 bg-white px-3 py-2">
-        <h3 className="truncate text-sm font-semibold">{file ? `${file.root}/${file.path.replace(/^(raw|wiki)\//, "")}` : "文件预览"}</h3>
-        {file && (
-          <a className="text-xs text-cyan-700 hover:underline" href={api.objectUrl(kbId, file.path)} target="_blank" rel="noreferrer">
-            打开源文件
-          </a>
-        )}
-      </div>
-      <div className="p-3">
-        {loading && <p className="text-sm text-neutral-500">正在读取文件...</p>}
-        {error && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
-        {!loading && !error && !file && <p className="text-sm text-neutral-500">点击 raw 或 wiki 文件后在这里查看内容。</p>}
-        {!loading && !error && file?.kind === "markdown" && (
-          <MarkdownView content={file.text ?? ""} />
-        )}
-        {!loading && !error && file?.kind === "text" && (
-          <pre className="max-h-52 overflow-auto whitespace-pre-wrap rounded-md bg-neutral-50 p-3 text-xs leading-5 text-neutral-700">{file.text}</pre>
-        )}
-        {!loading && !error && file?.kind === "image" && (
-          <img className="max-h-52 max-w-full rounded-md border border-neutral-200 object-contain" src={file.imageUrl} alt={file.name} />
-        )}
-        {!loading && !error && file?.kind === "pdf" && (
-          <iframe className="h-52 w-full rounded-md border border-neutral-200" src={api.objectUrl(kbId, file.path)} title={file.name} />
-        )}
-        {!loading && !error && file?.kind === "binary" && (
-          <p className="text-sm text-neutral-500">该文件不是可直接预览的文本或图片，可通过“打开源文件”查看。</p>
-        )}
-      </div>
-    </section>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-neutral-950/55 p-4" role="dialog" aria-modal="true" onMouseDown={onClose}>
+      <section className="flex h-[82vh] w-full max-w-[1200px] flex-col overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-2xl" onMouseDown={(event) => event.stopPropagation()}>
+        <header className="flex h-14 shrink-0 items-center justify-between border-b border-neutral-200 px-5">
+          <div className="flex min-w-0 items-center gap-3">
+            <FileText className="h-4 w-4 shrink-0 text-neutral-500" />
+            <div className="min-w-0">
+              <h3 className="truncate text-sm font-semibold">{file?.name ?? "文件预览"}</h3>
+              {file && <p className="mt-0.5 truncate text-xs text-neutral-500">{file.root}/{file.path.replace(/^(raw|wiki)\//, "")}</p>}
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-3">
+            <span className="text-xs text-neutral-500">{contentLength > 0 ? `${formatCharCount(contentLength)} 字符` : "原文件"}</span>
+            <span className="rounded-md border border-neutral-200 bg-white px-3 py-1.5 text-sm font-medium text-neutral-800">{modeLabel}</span>
+            {file && (
+              <a
+                className="inline-flex h-9 items-center gap-2 rounded-md border border-neutral-200 px-3 text-sm font-medium text-neutral-700 hover:bg-neutral-50"
+                href={api.objectUrl(kbId, file.path)}
+                target="_blank"
+                rel="noreferrer"
+                download={file.name}
+              >
+                <Download className="h-4 w-4" />
+                下载
+              </a>
+            )}
+            <button className="flex h-8 w-8 items-center justify-center rounded-md text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700" onClick={onClose} type="button" aria-label="关闭预览">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </header>
+        <div className="min-h-0 flex-1 overflow-auto p-6">
+          {loading && <p className="text-sm text-neutral-500">正在读取原文...</p>}
+          {error && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
+          {!loading && !error && file?.kind === "markdown" && <MarkdownView content={file.text ?? ""} />}
+          {!loading && !error && file?.kind === "text" && (
+            <pre className="whitespace-pre-wrap rounded-md bg-neutral-50 p-4 text-sm leading-7 text-neutral-800">{file.text}</pre>
+          )}
+          {!loading && !error && file?.kind === "image" && (
+            <div className="flex min-h-full items-start justify-center">
+              <img className="max-h-full max-w-full rounded-md border border-neutral-200 object-contain" src={file.imageUrl} alt={file.name} />
+            </div>
+          )}
+          {!loading && !error && file?.kind === "pdf" && (
+            <iframe className="h-full min-h-[640px] w-full rounded-md border border-neutral-200" src={api.objectUrl(kbId, file.path)} title={file.name} />
+          )}
+          {!loading && !error && file?.kind === "binary" && (
+            <p className="rounded-md border border-neutral-200 bg-neutral-50 p-4 text-sm text-neutral-600">该文件不是可直接渲染的文本、Markdown、图片或 PDF，可通过“下载”查看原文件。</p>
+          )}
+        </div>
+      </section>
+    </div>
   )
+}
+
+function formatCharCount(count: number): string {
+  if (count >= 1000) return `${(count / 1000).toFixed(count >= 10_000 ? 0 : 1)}k`
+  return String(count)
 }
 
 function MarkdownView({ content }: { content: string }) {
