@@ -1,9 +1,59 @@
 export type JobStatus = "queued" | "running" | "completed" | "failed" | "cancelled"
 export type SourceStatus = "uploaded" | "parsing" | "queued" | "ingested" | "failed"
 export type ReviewStatus = "open" | "resolved" | "dismissed"
+export type CompanyMemberRole = "company_admin" | "member"
+
+export interface Identity {
+  id: string
+  provider: "ldap"
+  providerSubject: string
+  username: string
+  displayName: string
+  email?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface Company {
+  id: string
+  name: string
+  slug: string
+  isDefault: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CompanyMember {
+  id: string
+  companyId: string
+  identityId: string
+  role: CompanyMemberRole
+  status: "active"
+  joinedAt: string
+  updatedAt: string
+}
+
+export interface AuthSession {
+  id: string
+  tokenHash: string
+  identityId: string
+  companyId: string
+  memberId: string
+  expiresAt: string
+  createdAt: string
+  lastSeenAt: string
+}
+
+export interface AuthContext {
+  session: AuthSession
+  identity: Identity
+  company: Company
+  member: CompanyMember
+}
 
 export interface KnowledgeBase {
   id: string
+  companyId: string
   name: string
   description: string
   createdAt: string
@@ -182,4 +232,3 @@ export interface ParsedDocument {
     sourcePage?: number
   }>
 }
-

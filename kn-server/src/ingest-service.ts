@@ -1,7 +1,7 @@
 import type { ImageAsset, IngestJob, PageChunk, ReviewItem, WikiLink, WikiPage } from "./types.js"
 import { DocumentParser } from "./document-parser.js"
 import { LlmGateway } from "./llm-gateway.js"
-import { JsonIndexRepository } from "./repository.js"
+import type { KnowledgeRepository } from "./repository.js"
 import type { StorageProvider } from "./storage.js"
 import {
   buildFallbackWikiPage,
@@ -25,7 +25,7 @@ export class IngestService {
   private cancelled = new Set<string>()
 
   constructor(
-    private readonly repo: JsonIndexRepository,
+    private readonly repo: KnowledgeRepository,
     private readonly storage: StorageProvider,
     private readonly parser: DocumentParser,
     private readonly llm: LlmGateway,

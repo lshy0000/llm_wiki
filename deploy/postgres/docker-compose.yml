@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: llm-wiki-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: llm_wiki
+      POSTGRES_USER: llm_wiki
+      POSTGRES_PASSWORD: llm_wiki_dev_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - llm_wiki_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U llm_wiki -d llm_wiki"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  llm_wiki_pg_data:

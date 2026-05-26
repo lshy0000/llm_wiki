@@ -1,5 +1,5 @@
 import type { ChatMessage, SearchResult } from "./types.js"
-import { JsonIndexRepository } from "./repository.js"
+import type { KnowledgeRepository } from "./repository.js"
 import { GraphService } from "./graph-service.js"
 import { LlmGateway } from "./llm-gateway.js"
 import { SearchService } from "./search-service.js"
@@ -11,7 +11,7 @@ function isGreeting(text: string): boolean {
 
 export class ChatService {
   constructor(
-    private readonly repo: JsonIndexRepository,
+    private readonly repo: KnowledgeRepository,
     private readonly search: SearchService,
     private readonly graph: GraphService,
     private readonly llm: LlmGateway,
@@ -123,4 +123,3 @@ export class ChatService {
     })
   }
 }
-

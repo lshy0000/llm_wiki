@@ -1,4 +1,5 @@
 import type {
+  AuthPayload,
   Capabilities,
   FileTreeNode,
   GraphResponse,
@@ -11,13 +12,28 @@ import type {
 } from "./types"
 
 export const API_BASE = import.meta.env.VITE_KN_API_BASE || "http://127.0.0.1:8787"
+const TOKEN_KEY = "kn.auth.token"
+
+export function getAuthToken(): string | null {
+  return window.localStorage.getItem(TOKEN_KEY)
+}
+
+function setAuthToken(token: string | undefined): void {
+  if (token) window.localStorage.setItem(TOKEN_KEY, token)
+}
+
+export function clearAuthToken(): void {
+  window.localStorage.removeItem(TOKEN_KEY)
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = getAuthToken()
+  const headers = new Headers(init?.headers)
+  if (!(init?.body instanceof FormData)) headers.set("content-type", "application/json")
+  if (token) headers.set("authorization", `Bearer ${token}`)
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
-    headers: init?.body instanceof FormData
-      ? init.headers
-      : { "content-type": "application/json", ...init?.headers },
+    headers,
   })
   if (!response.ok) {
     const detail = await response.text().catch(() => "")
@@ -28,6 +44,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   capabilities: () => request<Capabilities>("/api/capabilities"),
+  ldapLogin: async (username: string, password: string) => {
+    const payload = await request<AuthPayload>("/api/auth/ldap-login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    })
+    setAuthToken(payload.token)
+    return payload
+  },
+  me: () => request<AuthPayload>("/api/auth/me"),
+  logout: async () => {
+    await request<{ ok: true }>("/api/auth/logout", { method: "POST" }).catch(() => undefined)
+    clearAuthToken()
+  },
   listKbs: () => request<KnowledgeBase[]>("/api/kbs"),
   createKb: (name: string, description: string) =>
     request<KnowledgeBase>("/api/kbs", {
@@ -68,6 +97,9 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ topic }),
     }),
-  objectUrl: (kbId: string, storageKey: string) => `${API_BASE}/api/kbs/${kbId}/objects/${encodeURIComponent(storageKey)}`,
+  objectUrl: (kbId: string, storageKey: string) => {
+    const token = getAuthToken()
+    const query = token ? `?access_token=${encodeURIComponent(token)}` : ""
+    return `${API_BASE}/api/kbs/${kbId}/objects/${encodeURIComponent(storageKey)}${query}`
+  },
 }
-

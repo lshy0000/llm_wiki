@@ -1,18 +1,19 @@
 import type { KnowledgeBase, WikiPage } from "./types.js"
-import { JsonIndexRepository } from "./repository.js"
+import type { KnowledgeRepository } from "./repository.js"
 import type { StorageProvider } from "./storage.js"
 import { defaultWikiFiles, id, nowIso, parseFrontmatter, pageIdFromPath, sha256 } from "./wiki-utils.js"
 
 export class ProjectService {
   constructor(
-    private readonly repo: JsonIndexRepository,
+    private readonly repo: KnowledgeRepository,
     private readonly storage: StorageProvider,
   ) {}
 
-  async createKnowledgeBase(input: { name: string; description?: string }): Promise<KnowledgeBase> {
+  async createKnowledgeBase(input: { companyId: string; name: string; description?: string }): Promise<KnowledgeBase> {
     const now = nowIso()
     const kb: KnowledgeBase = {
       id: id("kb"),
+      companyId: input.companyId,
       name: input.name.trim(),
       description: input.description?.trim() ?? "",
       createdAt: now,
@@ -31,8 +32,8 @@ export class ProjectService {
     return (await this.repo.getKnowledgeBase(kb.id)) ?? kb
   }
 
-  async listKnowledgeBases(): Promise<KnowledgeBase[]> {
-    return this.repo.listKnowledgeBases()
+  async listKnowledgeBases(companyId: string): Promise<KnowledgeBase[]> {
+    return this.repo.listKnowledgeBases(companyId)
   }
 
   async getKnowledgeBase(kbId: string): Promise<KnowledgeBase> {
@@ -58,4 +59,3 @@ export class ProjectService {
     }
   }
 }
-

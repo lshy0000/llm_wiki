@@ -1,10 +1,28 @@
 export interface KnowledgeBase {
   id: string
+  companyId: string
   name: string
   description: string
   createdAt: string
   updatedAt: string
   dataVersion: number
+}
+
+export interface AuthPayload {
+  token?: string
+  expiresAt: string
+  user: {
+    id: string
+    username: string
+    displayName: string
+    email?: string
+    role: "company_admin" | "member"
+  }
+  company: {
+    id: string
+    name: string
+    slug: string
+  }
 }
 
 export interface FileTreeNode {
@@ -129,4 +147,3 @@ export interface Capabilities {
   }
   searchProviders: Record<string, boolean>
 }
-

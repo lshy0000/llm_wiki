@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   Bot,
   Brain,
+  Building2,
   CheckCircle2,
   CircleHelp,
   Database,
@@ -11,15 +12,19 @@ import {
   Folder,
   GitBranch,
   Image,
+  KeyRound,
+  LogOut,
   Network,
   Plus,
   RefreshCw,
   Search,
   Upload,
+  UserRound,
   X,
 } from "lucide-react"
 import { api } from "@/web/api"
 import type {
+  AuthPayload,
   Capabilities,
   FileTreeNode,
   GraphResponse,
@@ -34,9 +39,11 @@ import type {
 type DetailTab = "sources" | "structure" | "graph" | "recall" | "reviews"
 
 function App() {
+  const [auth, setAuth] = useState<AuthPayload | null>(null)
   const [kbs, setKbs] = useState<KnowledgeBase[]>([])
   const [selected, setSelected] = useState<KnowledgeBase | null>(null)
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null)
+  const [authLoading, setAuthLoading] = useState(true)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -58,11 +65,52 @@ function App() {
   }
 
   useEffect(() => {
-    void loadKbs()
+    api.me()
+      .then((current) => {
+        setAuth(current)
+        void loadKbs()
+      })
+      .catch(() => {
+        setAuth(null)
+        setLoading(false)
+      })
+      .finally(() => setAuthLoading(false))
   }, [])
 
+  const handleLoggedIn = (current: AuthPayload) => {
+    setAuth(current)
+    void loadKbs()
+  }
+
+  const logout = async () => {
+    await api.logout()
+    setAuth(null)
+    setSelected(null)
+    setKbs([])
+  }
+
+  if (authLoading) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-[#f7f7f4] text-sm text-neutral-600">
+        正在检查登录状态...
+      </main>
+    )
+  }
+
+  if (!auth) {
+    return <LoginPage onLoggedIn={handleLoggedIn} />
+  }
+
   if (selected) {
-    return <KnowledgeBaseDetail kb={selected} onBack={() => { setSelected(null); void loadKbs() }} capabilities={capabilities} />
+    return (
+      <KnowledgeBaseDetail
+        kb={selected}
+        auth={auth}
+        onBack={() => { setSelected(null); void loadKbs() }}
+        onLogout={() => void logout()}
+        capabilities={capabilities}
+      />
+    )
   }
 
   return (
@@ -73,13 +121,23 @@ function App() {
             <p className="text-xs font-medium uppercase tracking-[0.18em] text-teal-700">Knowledge Network</p>
             <h1 className="mt-2 text-3xl font-semibold tracking-normal">知识库</h1>
           </div>
-          <button
-            className="inline-flex h-10 items-center gap-2 border border-neutral-300 bg-white px-3 text-sm font-medium hover:bg-neutral-100"
-            onClick={() => void loadKbs()}
-          >
-            <RefreshCw className="h-4 w-4" />
-            刷新
-          </button>
+          <div className="flex items-center gap-2">
+            <UserBadge auth={auth} />
+            <button
+              className="inline-flex h-10 items-center gap-2 border border-neutral-300 bg-white px-3 text-sm font-medium hover:bg-neutral-100"
+              onClick={() => void loadKbs()}
+            >
+              <RefreshCw className="h-4 w-4" />
+              刷新
+            </button>
+            <button
+              className="inline-flex h-10 items-center gap-2 border border-neutral-300 bg-white px-3 text-sm font-medium hover:bg-neutral-100"
+              onClick={() => void logout()}
+            >
+              <LogOut className="h-4 w-4" />
+              退出
+            </button>
+          </div>
         </header>
 
         {error && <div className="mt-4 border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800">{error}</div>}
@@ -120,6 +178,83 @@ function App() {
         <CapabilityStrip capabilities={capabilities} />
       </section>
     </main>
+  )
+}
+
+function LoginPage({ onLoggedIn }: { onLoggedIn: (auth: AuthPayload) => void }) {
+  const [username, setUsername] = useState("")
+  const [password, setPassword] = useState("")
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const submit = async () => {
+    if (!username.trim() || !password) return
+    setBusy(true)
+    setError(null)
+    try {
+      onLoggedIn(await api.ldapLogin(username, password))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-[#f7f7f4] px-6 text-neutral-950">
+      <section className="w-full max-w-md border border-neutral-300 bg-white p-6">
+        <div className="flex items-center gap-3">
+          <div className="flex h-11 w-11 items-center justify-center bg-neutral-950 text-white">
+            <KeyRound className="h-5 w-5" />
+          </div>
+          <div>
+            <p className="text-xs font-medium uppercase tracking-[0.18em] text-teal-700">Enterprise Login</p>
+            <h1 className="mt-1 text-2xl font-semibold">LDAP 登录</h1>
+          </div>
+        </div>
+        <label className="mt-6 block text-xs font-medium text-neutral-600">账号</label>
+        <input
+          className="mt-1 h-10 w-full border border-neutral-300 px-3 text-sm outline-none focus:border-teal-700"
+          value={username}
+          onChange={(event) => setUsername(event.target.value)}
+          onKeyDown={(event) => { if (event.key === "Enter") void submit() }}
+          placeholder="LDAP 用户名"
+        />
+        <label className="mt-3 block text-xs font-medium text-neutral-600">密码</label>
+        <input
+          className="mt-1 h-10 w-full border border-neutral-300 px-3 text-sm outline-none focus:border-teal-700"
+          value={password}
+          onChange={(event) => setPassword(event.target.value)}
+          onKeyDown={(event) => { if (event.key === "Enter") void submit() }}
+          placeholder="LDAP 密码"
+          type="password"
+        />
+        {error && <div className="mt-4 border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</div>}
+        <button
+          className="mt-5 inline-flex h-10 w-full items-center justify-center gap-2 bg-neutral-950 px-3 text-sm font-medium text-white disabled:opacity-50"
+          disabled={busy || !username.trim() || !password}
+          onClick={() => void submit()}
+        >
+          <UserRound className="h-4 w-4" />
+          {busy ? "登录中" : "登录"}
+        </button>
+      </section>
+    </main>
+  )
+}
+
+function UserBadge({ auth }: { auth: AuthPayload }) {
+  return (
+    <div className="flex h-10 items-center gap-3 border border-neutral-300 bg-white px-3 text-sm">
+      <UserRound className="h-4 w-4 text-neutral-500" />
+      <div className="leading-4">
+        <div className="font-medium">{auth.user.displayName}</div>
+        <div className="flex items-center gap-1 text-xs text-neutral-500">
+          <Building2 className="h-3 w-3" />
+          {auth.company.name}
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -219,11 +354,15 @@ function CapabilityStrip({ capabilities }: { capabilities: Capabilities | null }
 
 function KnowledgeBaseDetail({
   kb,
+  auth,
   onBack,
+  onLogout,
   capabilities,
 }: {
   kb: KnowledgeBase
+  auth: AuthPayload
   onBack: () => void
+  onLogout: () => void
   capabilities: Capabilities | null
 }) {
   const [tab, setTab] = useState<DetailTab>("sources")
@@ -241,9 +380,15 @@ function KnowledgeBaseDetail({
               <p className="text-sm text-neutral-600">{kb.description || "浏览器知识库详情"}</p>
             </div>
           </div>
-          <div className="text-right text-xs text-neutral-500">
-            <div>数据版本 {kb.dataVersion}</div>
-            <div>{new Date(kb.updatedAt).toLocaleString()}</div>
+          <div className="flex items-center gap-2">
+            <UserBadge auth={auth} />
+            <div className="px-2 text-right text-xs text-neutral-500">
+              <div>数据版本 {kb.dataVersion}</div>
+              <div>{new Date(kb.updatedAt).toLocaleString()}</div>
+            </div>
+            <button className="inline-flex h-9 w-9 items-center justify-center border border-neutral-300 bg-white" onClick={onLogout}>
+              <LogOut className="h-4 w-4" />
+            </button>
           </div>
         </header>
 

@@ -1,5 +1,5 @@
 import type { FileTreeNode } from "./types.js"
-import { JsonIndexRepository } from "./repository.js"
+import type { KnowledgeRepository } from "./repository.js"
 import type { SourceService } from "./source-service.js"
 import type { StorageProvider } from "./storage.js"
 
@@ -8,7 +8,7 @@ export class SourceWatchService {
   private scanning = false
 
   constructor(
-    private readonly repo: JsonIndexRepository,
+    private readonly repo: KnowledgeRepository,
     private readonly storage: StorageProvider,
     private readonly source: SourceService,
     private readonly onQueued: () => Promise<void>,
@@ -37,6 +37,10 @@ export class SourceWatchService {
     }
   }
 
+  async scanKnowledgeBase(kbId: string): Promise<void> {
+    await this.scanKb(kbId)
+  }
+
   private async scanKb(kbId: string): Promise<void> {
     const known = new Set((await this.repo.listSources(kbId)).map((source) => source.storageKey))
     const files = this.flatten(await this.storage.listTree(kbId, "raw/sources"))
@@ -54,4 +58,3 @@ export class SourceWatchService {
     return nodes.flatMap((node) => [node, ...(node.children ? this.flatten(node.children) : [])])
   }
 }
-

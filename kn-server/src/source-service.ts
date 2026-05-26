@@ -1,11 +1,11 @@
 import type { IngestJob, SourceDocument } from "./types.js"
-import { JsonIndexRepository } from "./repository.js"
+import type { KnowledgeRepository } from "./repository.js"
 import type { StorageProvider } from "./storage.js"
 import { fileNameOf, folderContextFor, id, normalizeStorageKey, nowIso, sha256 } from "./wiki-utils.js"
 
 export class SourceService {
   constructor(
-    private readonly repo: JsonIndexRepository,
+    private readonly repo: KnowledgeRepository,
     private readonly storage: StorageProvider,
   ) {}
 

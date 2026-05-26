@@ -1,12 +1,12 @@
 import type { ReviewItem } from "./types.js"
-import { JsonIndexRepository } from "./repository.js"
+import type { KnowledgeRepository } from "./repository.js"
 import type { SourceService } from "./source-service.js"
 import { LlmGateway } from "./llm-gateway.js"
 import { id, nowIso } from "./wiki-utils.js"
 
 export class ResearchService {
   constructor(
-    private readonly repo: JsonIndexRepository,
+    private readonly repo: KnowledgeRepository,
     private readonly sourceService: SourceService,
     private readonly llm: LlmGateway,
   ) {}
@@ -95,4 +95,3 @@ export class ResearchService {
     return outputs.join("\n\n")
   }
 }
-

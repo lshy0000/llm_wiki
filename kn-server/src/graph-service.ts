@@ -1,7 +1,7 @@
 import { createRequire } from "node:module"
 import { UndirectedGraph } from "graphology"
 import type { CommunityInfo, GraphEdge, GraphNode, ReviewItem, WikiPage } from "./types.js"
-import { JsonIndexRepository } from "./repository.js"
+import type { KnowledgeRepository } from "./repository.js"
 import { id, nowIso } from "./wiki-utils.js"
 
 const require = createRequire(import.meta.url)
@@ -32,7 +32,7 @@ interface NodeModel {
 }
 
 export class GraphService {
-  constructor(private readonly repo: JsonIndexRepository) {}
+  constructor(private readonly repo: KnowledgeRepository) {}
 
   async buildGraph(kbId: string): Promise<{ nodes: GraphNode[]; edges: GraphEdge[]; communities: CommunityInfo[] }> {
     const pages = (await this.repo.listPages(kbId)).filter((page) => page.type !== "query" && page.path !== "wiki/index.md")

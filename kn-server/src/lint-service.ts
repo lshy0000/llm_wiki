@@ -1,9 +1,9 @@
 import type { ReviewItem } from "./types.js"
-import { JsonIndexRepository } from "./repository.js"
+import type { KnowledgeRepository } from "./repository.js"
 import { id, nowIso } from "./wiki-utils.js"
 
 export class LintService {
-  constructor(private readonly repo: JsonIndexRepository) {}
+  constructor(private readonly repo: KnowledgeRepository) {}
 
   async run(kbId: string): Promise<ReviewItem[]> {
     const pages = await this.repo.listPages(kbId)
@@ -53,4 +53,3 @@ export class LintService {
     })
   }
 }
-
