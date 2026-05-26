@@ -26,7 +26,6 @@ import {
   KeyRound,
   LibraryBig,
   LogOut,
-  Lock,
   MessageSquare,
   Moon,
   Network,
@@ -36,7 +35,6 @@ import {
   ShieldCheck,
   Upload,
   UserRound,
-  Users,
   X,
 } from "lucide-react"
 import { API_BASE, api, getAuthToken } from "@/web/api"
@@ -200,7 +198,6 @@ function App() {
   return (
     <AppShell auth={auth} route={route} onNavigate={navigate} onLogout={() => void logout()}>
       <DatabaseListPage
-        capabilities={capabilities}
         error={error}
         kbs={kbs}
         loading={loading}
@@ -222,33 +219,50 @@ function App() {
 }
 
 function DatabaseListPage({
-  capabilities,
   error,
   kbs,
   loading,
   onCreate,
   onOpen,
 }: {
-  capabilities: Capabilities | null
   error: string | null
   kbs: KnowledgeBase[]
   loading: boolean
   onCreate: () => void
   onOpen: (kbId: string) => void
 }) {
-  const companyVisible = kbs.filter((kb) => kb.visibility === "company").length
-  const creatorOnly = kbs.length - companyVisible
+  const [fileCounts, setFileCounts] = useState<Record<string, number>>({})
+
+  useEffect(() => {
+    let alive = true
+    if (kbs.length === 0) {
+      setFileCounts({})
+      return () => { alive = false }
+    }
+    void Promise.all(
+      kbs.map(async (kb) => {
+        try {
+          const sources = await api.listSources(kb.id)
+          return [kb.id, sources.filter((source) => source.root === "raw").length] as const
+        } catch {
+          return [kb.id, undefined] as const
+        }
+      }),
+    ).then((entries) => {
+      if (!alive) return
+      const next: Record<string, number> = {}
+      for (const [kbId, count] of entries) {
+        if (typeof count === "number") next[kbId] = count
+      }
+      setFileCounts(next)
+    })
+    return () => { alive = false }
+  }, [kbs])
 
   return (
     <section className="flex h-full flex-col bg-[#f6f7f9] text-neutral-950">
       <header className="flex h-14 shrink-0 items-center justify-between border-b border-neutral-200 bg-white px-5">
-        <div className="flex h-full items-center gap-5">
-          <h1 className="text-lg font-semibold">知识库</h1>
-          <div className="flex h-9 items-center rounded-md bg-neutral-100 p-1">
-            <button className="h-7 rounded bg-white px-3 text-sm font-medium text-cyan-700 shadow-sm">文档知识库</button>
-            <button className="h-7 rounded px-3 text-sm font-medium text-neutral-500 hover:text-neutral-900">知识图谱</button>
-          </div>
-        </div>
+        <h1 className="text-lg font-semibold">知识库</h1>
         <button
           className="inline-flex h-9 items-center gap-2 rounded-md bg-cyan-700 px-3 text-sm font-medium text-white shadow-sm hover:bg-cyan-800"
           onClick={onCreate}
@@ -261,18 +275,6 @@ function DatabaseListPage({
       <div className="min-h-0 flex-1 overflow-auto px-5 py-4">
         {error && <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{error}</div>}
 
-        <div className="mb-4 grid grid-cols-4 gap-3">
-          <MetricCard label="知识库总数" value={String(kbs.length)} helper="llm_wiki 单一知识库形态" icon={<LibraryBig className="h-4 w-4" />} />
-          <MetricCard label="全公司可见" value={String(companyVisible)} helper="同公司成员登录后可见" icon={<Users className="h-4 w-4" />} />
-          <MetricCard label="仅创建者" value={String(creatorOnly)} helper="创建时选择私有范围" icon={<Lock className="h-4 w-4" />} />
-          <MetricCard
-            label="向量检索"
-            value={capabilities?.providers.embeddingConfigured ? "已启用" : "待配置"}
-            helper={capabilities?.providers.embeddingModel || "text-embedding"}
-            icon={<Network className="h-4 w-4" />}
-          />
-        </div>
-
         {loading ? (
           <div className="rounded-md border border-neutral-200 bg-white p-6 text-sm text-neutral-600 shadow-sm">正在连接 KN 服务端...</div>
         ) : kbs.length === 0 ? (
@@ -280,36 +282,19 @@ function DatabaseListPage({
         ) : (
           <div className="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-4">
             {kbs.map((kb) => (
-              <KnowledgeBaseCard key={kb.id} kb={kb} onOpen={() => onOpen(kb.id)} />
+              <KnowledgeBaseCard key={kb.id} fileCount={fileCounts[kb.id]} kb={kb} onOpen={() => onOpen(kb.id)} />
             ))}
           </div>
         )}
-      </div>
-
-      <div className="shrink-0 border-t border-neutral-200 bg-white px-5 py-3">
-        <CapabilityStrip capabilities={capabilities} />
       </div>
     </section>
   )
 }
 
-function MetricCard({ label, value, helper, icon }: { label: string; value: string; helper: string; icon: ReactElement }) {
-  return (
-    <article className="rounded-md border border-neutral-200 bg-white p-3 shadow-sm">
-      <div className="flex items-center justify-between text-neutral-500">
-        <span className="text-xs font-medium">{label}</span>
-        <span className="flex h-7 w-7 items-center justify-center rounded-md bg-neutral-100 text-neutral-700">{icon}</span>
-      </div>
-      <div className="mt-2 text-xl font-semibold">{value}</div>
-      <div className="mt-1 truncate text-xs text-neutral-500">{helper}</div>
-    </article>
-  )
-}
-
-function KnowledgeBaseCard({ kb, onOpen }: { kb: KnowledgeBase; onOpen: () => void }) {
+function KnowledgeBaseCard({ fileCount, kb, onOpen }: { fileCount?: number; kb: KnowledgeBase; onOpen: () => void }) {
   return (
     <button
-      className="group flex h-36 flex-col overflow-hidden rounded-lg border border-neutral-200 bg-white p-3 text-left shadow-sm transition hover:border-cyan-200 hover:bg-cyan-50/40 hover:shadow-md"
+      className="group flex h-32 flex-col overflow-hidden rounded-lg border border-neutral-200 bg-white p-3 text-left shadow-sm transition hover:border-cyan-200 hover:bg-cyan-50/40 hover:shadow-md"
       onClick={onOpen}
     >
       <div className="flex items-start gap-3">
@@ -318,18 +303,10 @@ function KnowledgeBaseCard({ kb, onOpen }: { kb: KnowledgeBase; onOpen: () => vo
         </div>
         <div className="min-w-0 flex-1">
           <h2 className="truncate text-base font-semibold">{kb.name}</h2>
-          <p className="mt-1 text-xs text-neutral-500">版本 {kb.dataVersion} · {new Date(kb.updatedAt).toLocaleDateString()}</p>
+          <p className="mt-1 text-xs text-neutral-500">{typeof fileCount === "number" ? `${fileCount} 个文件` : "正在统计文件"}</p>
         </div>
-        <span className="rounded-md border border-neutral-200 bg-white px-2 py-1 text-xs text-neutral-600">
-          {kb.visibility === "company" ? "公司" : "私有"}
-        </span>
       </div>
-      <p className="mt-3 line-clamp-2 min-h-10 text-sm leading-5 text-neutral-600">{kb.description || "暂无描述"}</p>
-      <div className="mt-auto flex flex-wrap gap-2">
-        <span className="rounded bg-purple-50 px-2 py-1 text-xs text-purple-700">LLM Wiki</span>
-        <span className="rounded bg-blue-50 px-2 py-1 text-xs text-blue-700">pgvector</span>
-        <span className="rounded bg-emerald-50 px-2 py-1 text-xs text-emerald-700">raw/wiki</span>
-      </div>
+      <p className="mt-3 line-clamp-2 text-sm leading-5 text-neutral-600">{kb.description || "暂无描述"}</p>
     </button>
   )
 }
