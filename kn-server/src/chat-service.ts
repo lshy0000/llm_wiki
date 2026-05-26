@@ -22,9 +22,12 @@ export class ChatService {
     answer: string
     citations: SearchResult[]
   }> {
+    const kb = await this.repo.getKnowledgeBase(input.kbId)
+    if (!kb) throw new Error("Knowledge base not found")
     const conversationId = input.conversationId || id("conv")
     await this.repo.addChatMessage({
       id: id("msg"),
+      companyId: kb.companyId,
       kbId: input.kbId,
       conversationId,
       role: "user",
@@ -35,7 +38,7 @@ export class ChatService {
 
     if (isGreeting(input.question)) {
       const answer = "你好，我可以基于这个知识库做召回、解释图谱关系，或回答具体问题。"
-      await this.persistAssistant(input.kbId, conversationId, answer, [])
+      await this.persistAssistant(kb.companyId, input.kbId, conversationId, answer, [])
       return { conversationId, answer, citations: [] }
     }
 
@@ -68,7 +71,8 @@ export class ChatService {
     ]
 
     const fallback = this.fallbackAnswer(input.question, search.results)
-    const answer = await this.llm.complete(
+    const answer = await this.llm.completeForCompany(
+      kb.companyId,
       [
         {
           role: "system",
@@ -91,7 +95,7 @@ export class ChatService {
       1400,
     )
 
-    await this.persistAssistant(input.kbId, conversationId, answer, search.results)
+    await this.persistAssistant(kb.companyId, input.kbId, conversationId, answer, search.results)
     return { conversationId, answer, citations: search.results.slice(0, 6) }
   }
 
@@ -107,9 +111,10 @@ export class ChatService {
     ].join("\n")
   }
 
-  private async persistAssistant(kbId: string, conversationId: string, answer: string, citations: SearchResult[]): Promise<ChatMessage> {
+  private async persistAssistant(companyId: string, kbId: string, conversationId: string, answer: string, citations: SearchResult[]): Promise<ChatMessage> {
     return this.repo.addChatMessage({
       id: id("msg"),
+      companyId,
       kbId,
       conversationId,
       role: "assistant",

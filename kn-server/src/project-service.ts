@@ -9,11 +9,20 @@ export class ProjectService {
     private readonly storage: StorageProvider,
   ) {}
 
-  async createKnowledgeBase(input: { companyId: string; name: string; description?: string }): Promise<KnowledgeBase> {
+  async createKnowledgeBase(input: {
+    companyId: string
+    createdBy: string
+    name: string
+    description?: string
+    visibility?: KnowledgeBase["visibility"]
+  }): Promise<KnowledgeBase> {
     const now = nowIso()
     const kb: KnowledgeBase = {
       id: id("kb"),
       companyId: input.companyId,
+      createdBy: input.createdBy,
+      visibility: input.visibility ?? "company",
+      type: "llm_wiki",
       name: input.name.trim(),
       description: input.description?.trim() ?? "",
       createdAt: now,
@@ -25,15 +34,15 @@ export class ProjectService {
     for (const file of defaultWikiFiles(kb.name)) {
       await this.storage.writeObject(kb.id, file.key, file.content)
       if (file.key.startsWith("wiki/") && file.key.endsWith(".md")) {
-        await this.repo.upsertPage(this.pageFromContent(kb.id, file.key, file.content, now))
+        await this.repo.upsertPage(this.pageFromContent(kb, file.key, file.content, now))
       }
     }
     await this.repo.bumpDataVersion(kb.id)
     return (await this.repo.getKnowledgeBase(kb.id)) ?? kb
   }
 
-  async listKnowledgeBases(companyId: string): Promise<KnowledgeBase[]> {
-    return this.repo.listKnowledgeBases(companyId)
+  async listKnowledgeBases(companyId: string, identityId: string): Promise<KnowledgeBase[]> {
+    return this.repo.listKnowledgeBases(companyId, identityId)
   }
 
   async getKnowledgeBase(kbId: string): Promise<KnowledgeBase> {
@@ -42,11 +51,12 @@ export class ProjectService {
     return kb
   }
 
-  private pageFromContent(kbId: string, key: string, content: string, now: string): WikiPage {
+  private pageFromContent(kb: KnowledgeBase, key: string, content: string, now: string): WikiPage {
     const fm = parseFrontmatter(content)
     return {
       id: pageIdFromPath(key),
-      kbId,
+      companyId: kb.companyId,
+      kbId: kb.id,
       path: key,
       title: fm.title,
       type: fm.type,

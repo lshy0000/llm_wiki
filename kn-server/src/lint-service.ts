@@ -6,6 +6,8 @@ export class LintService {
   constructor(private readonly repo: KnowledgeRepository) {}
 
   async run(kbId: string): Promise<ReviewItem[]> {
+    const kb = await this.repo.getKnowledgeBase(kbId)
+    if (!kb) throw new Error("Knowledge base not found")
     const pages = await this.repo.listPages(kbId)
     const links = await this.repo.listLinks(kbId)
     const pageIds = new Set(pages.map((page) => page.id))
@@ -23,25 +25,26 @@ export class LintService {
       if (pageIds.has(link.targetPageId)) {
         incoming.set(link.targetPageId, (incoming.get(link.targetPageId) ?? 0) + 1)
       } else {
-        reviews.push(await this.add(kbId, link.sourcePageId, "Broken wikilink", `Missing target [[${link.targetRaw}]].`))
+        reviews.push(await this.add(kb.companyId, kbId, link.sourcePageId, "Broken wikilink", `Missing target [[${link.targetRaw}]].`))
       }
     }
 
     for (const page of pages.filter((page) => page.path !== "wiki/index.md")) {
       if ((incoming.get(page.id) ?? 0) === 0 && page.type !== "overview") {
-        reviews.push(await this.add(kbId, page.id, "Orphan wiki page", `${page.title} has no inbound wiki links.`))
+        reviews.push(await this.add(kb.companyId, kbId, page.id, "Orphan wiki page", `${page.title} has no inbound wiki links.`))
       }
       if ((out.get(page.id) ?? 0) === 0 && page.type !== "source") {
-        reviews.push(await this.add(kbId, page.id, "No outgoing links", `${page.title} does not connect to other wiki pages.`))
+        reviews.push(await this.add(kb.companyId, kbId, page.id, "No outgoing links", `${page.title} does not connect to other wiki pages.`))
       }
     }
 
     return reviews
   }
 
-  private async add(kbId: string, pageId: string, title: string, description: string): Promise<ReviewItem> {
+  private async add(companyId: string, kbId: string, pageId: string, title: string, description: string): Promise<ReviewItem> {
     return this.repo.addReview({
       id: id("rev"),
+      companyId,
       kbId,
       pageId,
       kind: "lint",

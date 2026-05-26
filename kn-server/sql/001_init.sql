@@ -40,6 +40,27 @@ CREATE TABLE IF NOT EXISTS company_members (
 
 CREATE INDEX IF NOT EXISTS company_members_identity_idx ON company_members(identity_id);
 
+CREATE TABLE IF NOT EXISTS company_models (
+  id TEXT PRIMARY KEY,
+  company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  provider TEXT NOT NULL CHECK (provider IN ('openai', 'qwen', 'deepseek', 'kimi', 'claudecode', 'ollama', 'custom')),
+  model TEXT NOT NULL,
+  endpoint TEXT NOT NULL DEFAULT '',
+  api_key TEXT,
+  capabilities TEXT[] NOT NULL DEFAULT '{}',
+  is_default_llm BOOLEAN NOT NULL DEFAULT FALSE,
+  is_default_embedding BOOLEAN NOT NULL DEFAULT FALSE,
+  is_default_vision BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS company_models_company_idx ON company_models(company_id, updated_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS company_models_default_llm_uidx ON company_models(company_id) WHERE is_default_llm;
+CREATE UNIQUE INDEX IF NOT EXISTS company_models_default_embedding_uidx ON company_models(company_id) WHERE is_default_embedding;
+CREATE UNIQUE INDEX IF NOT EXISTS company_models_default_vision_uidx ON company_models(company_id) WHERE is_default_vision;
+
 CREATE TABLE IF NOT EXISTS auth_sessions (
   id TEXT PRIMARY KEY,
   token_hash TEXT NOT NULL UNIQUE,
@@ -57,6 +78,9 @@ CREATE INDEX IF NOT EXISTS auth_sessions_expires_idx ON auth_sessions(expires_at
 CREATE TABLE IF NOT EXISTS knowledge_bases (
   id TEXT PRIMARY KEY,
   company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  created_by TEXT REFERENCES identities(id) ON DELETE SET NULL,
+  visibility TEXT NOT NULL DEFAULT 'company' CHECK (visibility IN ('company', 'creator_only')),
+  type TEXT NOT NULL DEFAULT 'llm_wiki' CHECK (type = 'llm_wiki'),
   name TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
   created_at TIMESTAMPTZ NOT NULL,
@@ -68,9 +92,13 @@ CREATE INDEX IF NOT EXISTS knowledge_bases_company_updated_idx ON knowledge_base
 
 CREATE TABLE IF NOT EXISTS sources (
   id TEXT PRIMARY KEY,
+  company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   kb_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+  root TEXT NOT NULL DEFAULT 'raw' CHECK (root IN ('raw', 'wiki')),
   file_name TEXT NOT NULL,
   relative_path TEXT NOT NULL,
+  parent_path TEXT NOT NULL DEFAULT '',
+  upload_batch_id TEXT,
   storage_key TEXT NOT NULL,
   content_type TEXT NOT NULL,
   size BIGINT NOT NULL,
@@ -83,9 +111,11 @@ CREATE TABLE IF NOT EXISTS sources (
 );
 
 CREATE INDEX IF NOT EXISTS sources_kb_path_idx ON sources(kb_id, relative_path);
+CREATE UNIQUE INDEX IF NOT EXISTS sources_scope_path_uidx ON sources(company_id, kb_id, root, relative_path);
 
 CREATE TABLE IF NOT EXISTS ingest_jobs (
   id TEXT PRIMARY KEY,
+  company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   kb_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
   source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
   status TEXT NOT NULL,
@@ -108,6 +138,7 @@ CREATE INDEX IF NOT EXISTS ingest_jobs_status_created_idx ON ingest_jobs(status,
 
 CREATE TABLE IF NOT EXISTS wiki_pages (
   id TEXT NOT NULL,
+  company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   kb_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
   path TEXT NOT NULL,
   title TEXT NOT NULL,
@@ -125,6 +156,7 @@ CREATE INDEX IF NOT EXISTS wiki_pages_kb_path_idx ON wiki_pages(kb_id, path);
 CREATE INDEX IF NOT EXISTS wiki_pages_kb_type_idx ON wiki_pages(kb_id, page_type);
 
 CREATE TABLE IF NOT EXISTS wiki_links (
+  company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   kb_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
   source_page_id TEXT NOT NULL,
   target_page_id TEXT NOT NULL,
@@ -135,6 +167,7 @@ CREATE INDEX IF NOT EXISTS wiki_links_kb_source_idx ON wiki_links(kb_id, source_
 CREATE INDEX IF NOT EXISTS wiki_links_kb_target_idx ON wiki_links(kb_id, target_page_id);
 
 CREATE TABLE IF NOT EXISTS page_sources (
+  company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   kb_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
   page_id TEXT NOT NULL,
   source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
@@ -143,6 +176,7 @@ CREATE TABLE IF NOT EXISTS page_sources (
 
 CREATE TABLE IF NOT EXISTS page_chunks (
   id TEXT PRIMARY KEY,
+  company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   kb_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
   page_id TEXT NOT NULL,
   text TEXT NOT NULL,
@@ -155,6 +189,7 @@ CREATE INDEX IF NOT EXISTS page_chunks_kb_page_idx ON page_chunks(kb_id, page_id
 
 CREATE TABLE IF NOT EXISTS image_assets (
   id TEXT PRIMARY KEY,
+  company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   kb_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
   source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
   page_id TEXT,
@@ -172,6 +207,7 @@ CREATE INDEX IF NOT EXISTS image_assets_source_idx ON image_assets(source_id);
 
 CREATE TABLE IF NOT EXISTS review_items (
   id TEXT PRIMARY KEY,
+  company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   kb_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
   source_id TEXT,
   page_id TEXT,
@@ -189,6 +225,7 @@ CREATE INDEX IF NOT EXISTS review_items_kb_created_idx ON review_items(kb_id, cr
 
 CREATE TABLE IF NOT EXISTS chat_messages (
   id TEXT PRIMARY KEY,
+  company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   kb_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
   conversation_id TEXT NOT NULL,
   role TEXT NOT NULL,
@@ -200,6 +237,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 CREATE INDEX IF NOT EXISTS chat_messages_conversation_idx ON chat_messages(kb_id, conversation_id, created_at);
 
 CREATE TABLE IF NOT EXISTS ingest_cache (
+  company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   kb_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
   source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
   source_hash TEXT NOT NULL,

@@ -1,6 +1,7 @@
 import type {
   AuthPayload,
   Capabilities,
+  CompanyModel,
   FileTreeNode,
   GraphResponse,
   IngestJob,
@@ -8,6 +9,7 @@ import type {
   ReviewItem,
   SearchResponse,
   SourceDocument,
+  WikiPage,
   WikiTreeGroup,
 } from "./types"
 
@@ -42,6 +44,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>
 }
 
+async function requestText(path: string, init?: RequestInit): Promise<string> {
+  const token = getAuthToken()
+  const headers = new Headers(init?.headers)
+  if (token) headers.set("authorization", `Bearer ${token}`)
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers,
+  })
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "")
+    throw new Error(detail || `HTTP ${response.status}`)
+  }
+  return response.text()
+}
+
 export const api = {
   capabilities: () => request<Capabilities>("/api/capabilities"),
   ldapLogin: async (username: string, password: string) => {
@@ -58,11 +75,28 @@ export const api = {
     clearAuthToken()
   },
   listKbs: () => request<KnowledgeBase[]>("/api/kbs"),
-  createKb: (name: string, description: string) =>
+  companyModels: () => request<CompanyModel[]>("/api/company/models"),
+  saveCompanyModel: (model: Partial<Omit<CompanyModel, "apiKeySet">> & { name: string; model: string; apiKey?: string }) =>
+    request<CompanyModel>("/api/company/models", {
+      method: "POST",
+      body: JSON.stringify(model),
+    }),
+  createKb: (name: string, description: string, visibility: "company" | "creator_only") =>
     request<KnowledgeBase>("/api/kbs", {
       method: "POST",
-      body: JSON.stringify({ name, description }),
+      body: JSON.stringify({ name, description, visibility }),
     }),
+  uploadFiles: (kbId: string, files: Array<{ file: File; relativePath: string }>) => {
+    const form = new FormData()
+    for (const item of files) {
+      form.append("relativePath", item.relativePath)
+      form.append("file", item.file, item.relativePath)
+    }
+    return request<{ created: Array<{ source: SourceDocument; job: IngestJob }> }>(`/api/kbs/${kbId}/sources`, {
+      method: "POST",
+      body: form,
+    })
+  },
   uploadFile: (kbId: string, file: File, relativePath: string) => {
     const form = new FormData()
     form.append("relativePath", relativePath)
@@ -78,6 +112,7 @@ export const api = {
   retryJob: (jobId: string) => request<IngestJob | undefined>(`/api/jobs/${jobId}/retry`, { method: "POST" }),
   fileTree: (kbId: string, root: "raw" | "wiki") => request<FileTreeNode[]>(`/api/kbs/${kbId}/files?root=${root}`),
   wikiTree: (kbId: string) => request<WikiTreeGroup[]>(`/api/kbs/${kbId}/wiki/tree`),
+  wikiPage: (kbId: string, pageId: string) => request<WikiPage>(`/api/kbs/${kbId}/wiki/pages/${pageId}`),
   search: (kbId: string, query: string) =>
     request<SearchResponse>(`/api/kbs/${kbId}/search`, {
       method: "POST",
@@ -102,4 +137,6 @@ export const api = {
     const query = token ? `?access_token=${encodeURIComponent(token)}` : ""
     return `${API_BASE}/api/kbs/${kbId}/objects/${encodeURIComponent(storageKey)}${query}`
   },
+  objectText: (kbId: string, storageKey: string) =>
+    requestText(`/api/kbs/${kbId}/objects/${encodeURIComponent(storageKey)}`),
 }

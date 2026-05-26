@@ -16,7 +16,10 @@ export class ResearchService {
     imported: number
     review: ReviewItem
   }> {
-    const optimized = await this.llm.complete(
+    const kb = await this.repo.getKnowledgeBase(kbId)
+    if (!kb) throw new Error("Knowledge base not found")
+    const optimized = await this.llm.completeForCompany(
+      kb.companyId,
       [
         {
           role: "system",
@@ -44,6 +47,7 @@ export class ResearchService {
 
     const review = await this.repo.addReview({
       id: id("rev"),
+      companyId: kb.companyId,
       kbId,
       kind: "deep-research",
       title: "Deep research queued",

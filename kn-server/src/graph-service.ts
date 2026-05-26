@@ -83,6 +83,8 @@ export class GraphService {
   }
 
   async insights(kbId: string): Promise<ReviewItem[]> {
+    const kb = await this.repo.getKnowledgeBase(kbId)
+    if (!kb) throw new Error("Knowledge base not found")
     const graph = await this.buildGraph(kbId)
     const direct = new Set(graph.edges.filter((edge) => edge.signals.directLink > 0).map((edge) => this.edgeKey(edge.source, edge.target)))
     const surprising = graph.edges
@@ -94,6 +96,7 @@ export class GraphService {
     for (const edge of surprising) {
       reviews.push(await this.repo.addReview({
         id: id("rev"),
+        companyId: kb.companyId,
         kbId,
         kind: "graph-insight",
         title: "Surprising graph connection",
@@ -108,6 +111,7 @@ export class GraphService {
     for (const node of isolated) {
       reviews.push(await this.repo.addReview({
         id: id("rev"),
+        companyId: kb.companyId,
         kbId,
         pageId: node.id,
         kind: "graph-insight",

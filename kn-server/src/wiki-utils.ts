@@ -27,11 +27,32 @@ export function fileNameOf(key: string): string {
   return normalizeStorageKey(key).split("/").pop() ?? key
 }
 
-export function folderContextFor(relativePath: string): string {
+export function parentPathOf(relativePath: string): string {
   const normalized = normalizeStorageKey(relativePath)
   const parts = normalized.split("/")
   parts.pop()
   return parts.join(" > ")
+}
+
+export function parentStoragePathOf(relativePath: string): string {
+  const normalized = normalizeStorageKey(relativePath)
+  const parts = normalized.split("/")
+  parts.pop()
+  return parts.join("/")
+}
+
+export function folderContextFor(relativePath: string, input?: { uploadBatchId?: string; root?: string }): string {
+  const normalized = normalizeStorageKey(relativePath)
+  const parentPath = parentStoragePathOf(normalized)
+  const fileName = fileNameOf(normalized)
+  return [
+    `Root: ${input?.root ?? "raw"}`,
+    `Relative path: ${normalized}`,
+    parentPath ? `Parent folder: ${parentPath}` : "Parent folder: /",
+    parentPath ? `Folder chain: ${parentPath.split("/").join(" > ")}` : "Folder chain: /",
+    `File name: ${fileName}`,
+    input?.uploadBatchId ? `Upload batch: ${input.uploadBatchId}` : "",
+  ].filter(Boolean).join("\n")
 }
 
 export function slugify(input: string): string {
@@ -214,8 +235,16 @@ export function defaultWikiFiles(name: string): Array<{ key: string; content: st
   const today = new Date().toISOString().slice(0, 10)
   return [
     {
-      key: "schema.md",
-      content: `# Wiki Schema
+      key: "wiki/schema.md",
+      content: `---
+type: schema
+title: ${name} Schema
+sources: []
+created: ${today}
+updated: ${today}
+---
+
+# Wiki Schema
 
 ## Page Types
 
@@ -235,15 +264,46 @@ export function defaultWikiFiles(name: string): Array<{ key: string; content: st
 `,
     },
     {
-      key: "purpose.md",
-      content: `# Project Purpose
+      key: "wiki/purpose.md",
+      content: `---
+type: purpose
+title: ${name} Purpose
+sources: []
+created: ${today}
+updated: ${today}
+---
+
+# Project Purpose
 
 ${name} is a browser knowledge base built with the llm_wiki pattern.
 `,
     },
     {
+      key: "wiki/log.md",
+      content: `---
+type: log
+title: ${name} Log
+sources: []
+created: ${today}
+updated: ${today}
+---
+
+# Operation Log
+
+- ${today}: Knowledge base initialized.
+`,
+    },
+    {
       key: "wiki/index.md",
-      content: `# Wiki Index
+      content: `---
+type: index
+title: ${name} Index
+sources: []
+created: ${today}
+updated: ${today}
+---
+
+# Wiki Index
 
 ## Entities
 
@@ -276,7 +336,7 @@ This page is maintained by the ingest pipeline.
   ]
 }
 
-export function buildFallbackWikiPage(sourceName: string, sourceText: string, sourceId: string): {
+export function buildFallbackWikiPage(sourceName: string, sourceText: string, sourceId: string, folderContext = ""): {
   path: string
   content: string
 } {
@@ -291,6 +351,8 @@ type: source
 title: ${title}
 sources:
   - ${sourceId}
+source_path: ${sourceName}
+folder_context: ${JSON.stringify(folderContext)}
 created: ${today}
 updated: ${today}
 ---
@@ -376,4 +438,3 @@ export function mediaTypeForFile(fileName: string): string {
 export function imageMarkdown(asset: ImageAsset): string {
   return `![${asset.caption}](/api/kbs/${asset.kbId}/objects/${encodeURIComponent(asset.storageKey)})`
 }
-

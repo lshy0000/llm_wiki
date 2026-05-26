@@ -18,8 +18,8 @@ import { SearchService } from "./search-service.js"
 import { SourceWatchService } from "./source-watch-service.js"
 import { SourceService } from "./source-service.js"
 import { LocalStorageProvider } from "./storage.js"
-import type { AuthContext, KnowledgeBase } from "./types.js"
-import { normalizeStorageKey } from "./wiki-utils.js"
+import type { AuthContext, CompanyModel, KnowledgeBase } from "./types.js"
+import { id, normalizeStorageKey, nowIso } from "./wiki-utils.js"
 
 export interface AppServices {
   repo: KnowledgeRepository
@@ -51,8 +51,10 @@ export async function buildApp(dataDir = path.resolve(process.cwd(), ".kn-data")
   }
   const repo = new PostgresRepository(databaseUrl)
   await repo.init()
-  const storage = new LocalStorageProvider(path.join(dataDir, "objects"))
-  const llm = new LlmGateway()
+  const defaultCompany = await repo.ensureDefaultCompany()
+  await repo.ensureEnvironmentModels(defaultCompany.id)
+  const storage = new LocalStorageProvider(path.join(dataDir, "database"))
+  const llm = new LlmGateway(repo)
   const auth = new AuthService(repo)
   await auth.ensureBuiltInAccounts()
   const project = new ProjectService(repo, storage)
@@ -94,39 +96,97 @@ function registerRoutes(app: FastifyInstance, services: AppServices): void {
     return { ok: true }
   })
 
-  app.get("/api/capabilities", async () => ({
-    llmWiki: {
-      twoStepCotIngest: true,
-      multimodalImageIngest: true,
-      fourSignalGraph: true,
-      louvainCommunityDetection: true,
-      graphInsights: true,
-      vectorSemanticSearch: true,
-      persistentIngestQueue: true,
-      folderImport: true,
-      rawSourceWatch: true,
-      deepResearch: true,
-      asyncReview: true,
-    },
-    providers: services.llm.capabilities(),
-    searchProviders: {
-      tavily: Boolean(process.env.TAVILY_API_KEY),
-      searxng: Boolean(process.env.SEARXNG_URL),
-      serpApi: Boolean(process.env.SERPAPI_API_KEY),
-    },
-  }))
+  app.get("/api/capabilities", async (request, reply) => {
+    const auth = await requireAuth(request, reply, services)
+    if (!auth) return
+    return {
+      llmWiki: {
+        twoStepCotIngest: true,
+        multimodalImageIngest: true,
+        fourSignalGraph: true,
+        louvainCommunityDetection: true,
+        graphInsights: true,
+        vectorSemanticSearch: true,
+        persistentIngestQueue: true,
+        folderImport: true,
+        rawSourceWatch: true,
+        deepResearch: true,
+        asyncReview: true,
+      },
+      providers: await services.llm.capabilities(auth.company.id),
+      searchProviders: {
+        tavily: Boolean(process.env.TAVILY_API_KEY),
+        searxng: Boolean(process.env.SEARXNG_URL),
+        serpApi: Boolean(process.env.SERPAPI_API_KEY),
+      },
+    }
+  })
+
+  app.get("/api/company/models", async (request, reply) => {
+    const auth = await requireAuth(request, reply, services)
+    if (!auth) return
+    if (!isCompanyAdmin(auth)) return reply.code(403).send({ error: "Company admin is required" })
+    return (await services.repo.listCompanyModels(auth.company.id)).map(sanitizeCompanyModel)
+  })
+
+  app.post<{
+    Body: {
+      id?: string
+      name?: string
+      provider?: CompanyModel["provider"]
+      model?: string
+      endpoint?: string
+      apiKey?: string
+      capabilities?: CompanyModel["capabilities"]
+      isDefaultLlm?: boolean
+      isDefaultEmbedding?: boolean
+      isDefaultVision?: boolean
+    }
+  }>("/api/company/models", async (request, reply) => {
+    const auth = await requireAuth(request, reply, services)
+    if (!auth) return
+    if (!isCompanyAdmin(auth)) return reply.code(403).send({ error: "Company admin is required" })
+    const body = request.body ?? {}
+    const name = body.name?.trim()
+    const modelName = body.model?.trim()
+    if (!name || !modelName) return reply.code(400).send({ error: "name and model are required" })
+    const now = nowIso()
+    const model: CompanyModel = {
+      id: body.id || id("mdl"),
+      companyId: auth.company.id,
+      name,
+      provider: normalizeProvider(body.provider),
+      model: modelName,
+      endpoint: body.endpoint?.trim() ?? "",
+      apiKey: body.apiKey?.trim() || undefined,
+      capabilities: normalizeModelCapabilities(body.capabilities),
+      isDefaultLlm: Boolean(body.isDefaultLlm),
+      isDefaultEmbedding: Boolean(body.isDefaultEmbedding),
+      isDefaultVision: Boolean(body.isDefaultVision),
+      createdAt: now,
+      updatedAt: now,
+    }
+    return sanitizeCompanyModel(await services.repo.saveCompanyModel(model))
+  })
 
   app.get("/api/kbs", async (request, reply) => {
     const auth = await requireAuth(request, reply, services)
     if (!auth) return
-    return services.project.listKnowledgeBases(auth.company.id)
+    return services.project.listKnowledgeBases(auth.company.id, auth.identity.id)
   })
-  app.post<{ Body: { name?: string; description?: string } }>("/api/kbs", async (request, reply) => {
+  app.post<{ Body: { name?: string; description?: string; visibility?: "company" | "creator_only" } }>("/api/kbs", async (request, reply) => {
     const auth = await requireAuth(request, reply, services)
     if (!auth) return
     const name = request.body?.name?.trim()
     if (!name) return reply.code(400).send({ error: "name is required" })
-    return services.project.createKnowledgeBase({ companyId: auth.company.id, name, description: request.body.description })
+    const visibility = request.body.visibility === "creator_only" ? "creator_only" : "company"
+    return services.project.createKnowledgeBase({
+      companyId: auth.company.id,
+      createdBy: auth.identity.id,
+      name,
+      description: request.body.description,
+      visibility,
+    })
   })
   app.get<{ Params: { kbId: string } }>("/api/kbs/:kbId", async (request, reply) => {
     const auth = await requireAuth(request, reply, services)
@@ -140,6 +200,7 @@ function registerRoutes(app: FastifyInstance, services: AppServices): void {
     const kb = await getCompanyKnowledgeBase(services, auth, request.params.kbId, reply)
     if (!kb) return
     let relativePath = ""
+    const uploadBatchId = id("upl")
     const created = []
     for await (const part of request.parts()) {
       if (part.type === "field" && part.fieldname === "relativePath") {
@@ -156,6 +217,7 @@ function registerRoutes(app: FastifyInstance, services: AppServices): void {
         relativePath: relativePath || part.filename,
         contentType: part.mimetype,
         bytes,
+        uploadBatchId,
       })
       created.push(saved)
       relativePath = ""
@@ -306,6 +368,31 @@ function tokenFromRequest(request: FastifyRequest): string | undefined {
   return extractBearerToken(request.headers.authorization) ?? query?.access_token
 }
 
+function isCompanyAdmin(auth: AuthContext): boolean {
+  return auth.identity.isPlatformAdmin || auth.member.role === "platform_admin" || auth.member.role === "org_admin"
+}
+
+function sanitizeCompanyModel(model: CompanyModel): Omit<CompanyModel, "apiKey"> & { apiKeySet: boolean } {
+  const { apiKey, ...rest } = model
+  return { ...rest, apiKeySet: Boolean(apiKey) }
+}
+
+function normalizeProvider(provider?: string): CompanyModel["provider"] {
+  const value = provider ?? "custom"
+  if (["openai", "qwen", "deepseek", "kimi", "claudecode", "ollama", "custom"].includes(value)) {
+    return value as CompanyModel["provider"]
+  }
+  return "custom"
+}
+
+function normalizeModelCapabilities(capabilities?: string[]): CompanyModel["capabilities"] {
+  const values = new Set<CompanyModel["capabilities"][number]>()
+  for (const capability of capabilities ?? []) {
+    if (capability === "llm" || capability === "embedding" || capability === "vision") values.add(capability)
+  }
+  return values.size > 0 ? [...values] : ["llm"]
+}
+
 async function requireAuth(
   request: FastifyRequest,
   reply: FastifyReply,
@@ -326,7 +413,7 @@ async function getCompanyKnowledgeBase(
   reply: FastifyReply,
 ): Promise<KnowledgeBase | undefined> {
   const kb = await services.project.getKnowledgeBase(kbId).catch(() => undefined)
-  if (!kb || kb.companyId !== auth.company.id) {
+  if (!kb || kb.companyId !== auth.company.id || (kb.visibility === "creator_only" && kb.createdBy !== auth.identity.id)) {
     reply.code(404).send({ error: "Knowledge base not found" })
     return undefined
   }
@@ -345,7 +432,7 @@ async function verifyJobCompany(
     return false
   }
   const kb = await services.repo.getKnowledgeBase(job.kbId)
-  if (!kb || kb.companyId !== auth.company.id) {
+  if (!kb || kb.companyId !== auth.company.id || (kb.visibility === "creator_only" && kb.createdBy !== auth.identity.id)) {
     reply.code(404).send({ error: "Job not found" })
     return false
   }

@@ -1,3 +1,6 @@
+import type { CompanyModel } from "./types.js"
+import type { KnowledgeRepository } from "./repository.js"
+
 export interface LlmMessage {
   role: "system" | "user" | "assistant"
   content:
@@ -27,19 +30,27 @@ export class LlmGateway {
   private readonly embeddingApiKey = process.env.KN_EMBEDDING_API_KEY ?? this.chatApiKey
   private readonly embeddingModel = process.env.KN_EMBEDDING_MODEL ?? "text-embedding-3-small"
 
-  constructor() {
+  constructor(private readonly repo?: KnowledgeRepository) {
     this.chatConfigured = this.chatEndpoint.length > 0
     this.embeddingConfigured = this.embeddingEndpoint.length > 0
   }
 
   async complete(messages: LlmMessage[], fallback: string, maxTokens = 1800): Promise<string> {
-    if (!this.chatConfigured) return fallback
+    return this.completeWithConfig(this.envModel("llm"), messages, fallback, maxTokens)
+  }
+
+  async completeForCompany(companyId: string, messages: LlmMessage[], fallback: string, maxTokens = 1800): Promise<string> {
+    return this.completeWithConfig(await this.resolveModel(companyId, "llm"), messages, fallback, maxTokens)
+  }
+
+  private async completeWithConfig(model: RuntimeModel | undefined, messages: LlmMessage[], fallback: string, maxTokens: number): Promise<string> {
+    if (!model?.endpoint) return fallback
     try {
-      const response = await fetch(this.chatUrl(), {
+      const response = await fetch(this.chatUrl(model.endpoint), {
         method: "POST",
-        headers: this.headers(this.chatApiKey),
+        headers: this.headers(model.apiKey ?? ""),
         body: JSON.stringify({
-          model: this.chatModel,
+          model: model.model,
           messages: messages.map((message) => ({
             role: message.role,
             content: Array.isArray(message.content)
@@ -69,8 +80,36 @@ export class LlmGateway {
     sourceName: string
   }): Promise<string> {
     const fallback = `Image extracted from ${input.sourceName}: ${input.fileName}.`
-    if (!this.chatConfigured) return fallback
-    return this.complete(
+    return this.completeWithConfig(
+      this.envModel("vision"),
+      [
+        {
+          role: "system",
+          content:
+            "Describe the image factually for a knowledge-base index. Mention visible text, chart axes, entities, numbers, and why it may matter. Do not speculate.",
+        },
+        {
+          role: "user",
+          content: [
+            { type: "text", text: `Source file: ${input.sourceName}. Image file: ${input.fileName}.` },
+            { type: "image", mediaType: input.mediaType, dataBase64: input.bytes.toString("base64") },
+          ],
+        },
+      ],
+      fallback,
+      500,
+    )
+  }
+
+  async captionImageForCompany(companyId: string, input: {
+    fileName: string
+    mediaType: string
+    bytes: Buffer
+    sourceName: string
+  }): Promise<string> {
+    const fallback = `Image extracted from ${input.sourceName}: ${input.fileName}.`
+    return this.completeWithConfig(
+      await this.resolveModel(companyId, "vision"),
       [
         {
           role: "system",
@@ -91,13 +130,21 @@ export class LlmGateway {
   }
 
   async embed(text: string): Promise<number[] | undefined> {
-    if (!this.embeddingConfigured) return undefined
+    return this.embedWithConfig(this.envModel("embedding"), text)
+  }
+
+  async embedForCompany(companyId: string, text: string): Promise<number[] | undefined> {
+    return this.embedWithConfig(await this.resolveModel(companyId, "embedding"), text)
+  }
+
+  private async embedWithConfig(model: RuntimeModel | undefined, text: string): Promise<number[] | undefined> {
+    if (!model?.endpoint) return undefined
     try {
-      const response = await fetch(this.embeddingUrl(), {
+      const response = await fetch(this.embeddingUrl(model.endpoint), {
         method: "POST",
-        headers: this.headers(this.embeddingApiKey),
+        headers: this.headers(model.apiKey ?? ""),
         body: JSON.stringify({
-          model: this.embeddingModel,
+          model: model.model,
           input: text.slice(0, 8000),
         }),
       })
@@ -109,30 +156,56 @@ export class LlmGateway {
     }
   }
 
-  capabilities(): {
+  async capabilities(companyId?: string): Promise<{
     chatConfigured: boolean
     embeddingConfigured: boolean
     model: string
     embeddingModel: string
-  } {
+    visionModel: string
+  }> {
+    const llm = companyId ? await this.resolveModel(companyId, "llm") : this.envModel("llm")
+    const embedding = companyId ? await this.resolveModel(companyId, "embedding") : this.envModel("embedding")
+    const vision = companyId ? await this.resolveModel(companyId, "vision") : this.envModel("vision")
     return {
-      chatConfigured: this.chatConfigured,
-      embeddingConfigured: this.embeddingConfigured,
-      model: this.chatModel,
-      embeddingModel: this.embeddingModel,
+      chatConfigured: Boolean(llm?.endpoint),
+      embeddingConfigured: Boolean(embedding?.endpoint),
+      model: llm?.model ?? this.chatModel,
+      embeddingModel: embedding?.model ?? this.embeddingModel,
+      visionModel: vision?.model ?? llm?.model ?? this.chatModel,
     }
   }
 
-  private chatUrl(): string {
-    return this.chatEndpoint.endsWith("/chat/completions")
-      ? this.chatEndpoint
-      : `${this.chatEndpoint.replace(/\/$/, "")}/v1/chat/completions`
+  private async resolveModel(companyId: string, capability: "llm" | "embedding" | "vision"): Promise<RuntimeModel | undefined> {
+    const companyModel = await this.repo?.getDefaultCompanyModel(companyId, capability)
+    if (companyModel) return this.toRuntimeModel(companyModel)
+    return this.envModel(capability)
   }
 
-  private embeddingUrl(): string {
-    return this.embeddingEndpoint.endsWith("/embeddings")
-      ? this.embeddingEndpoint
-      : `${this.embeddingEndpoint.replace(/\/$/, "")}/v1/embeddings`
+  private toRuntimeModel(model: CompanyModel): RuntimeModel {
+    return {
+      endpoint: model.endpoint,
+      apiKey: model.apiKey,
+      model: model.model,
+    }
+  }
+
+  private envModel(capability: "llm" | "embedding" | "vision"): RuntimeModel | undefined {
+    if (capability === "embedding") {
+      return { endpoint: this.embeddingEndpoint, apiKey: this.embeddingApiKey, model: this.embeddingModel }
+    }
+    return { endpoint: this.chatEndpoint, apiKey: this.chatApiKey, model: this.chatModel }
+  }
+
+  private chatUrl(endpoint: string): string {
+    return endpoint.endsWith("/chat/completions")
+      ? endpoint
+      : `${endpoint.replace(/\/$/, "")}/v1/chat/completions`
+  }
+
+  private embeddingUrl(endpoint: string): string {
+    return endpoint.endsWith("/embeddings")
+      ? endpoint
+      : `${endpoint.replace(/\/$/, "")}/v1/embeddings`
   }
 
   private headers(apiKey: string): Record<string, string> {
@@ -143,3 +216,8 @@ export class LlmGateway {
   }
 }
 
+interface RuntimeModel {
+  endpoint: string
+  apiKey?: string
+  model: string
+}

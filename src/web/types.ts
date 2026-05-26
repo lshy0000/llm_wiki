@@ -1,6 +1,9 @@
 export interface KnowledgeBase {
   id: string
   companyId: string
+  createdBy: string
+  visibility: "company" | "creator_only"
+  type: "llm_wiki"
   name: string
   description: string
   createdAt: string
@@ -37,12 +40,40 @@ export interface FileTreeNode {
 
 export interface SourceDocument {
   id: string
+  companyId: string
+  kbId: string
+  root: "raw" | "wiki"
   fileName: string
   relativePath: string
+  parentPath: string
+  uploadBatchId?: string
+  storageKey: string
+  contentType: string
   status: string
   folderContext: string
   size: number
+  createdAt: string
+  updatedAt: string
   error?: string
+}
+
+export type ModelProvider = "openai" | "qwen" | "deepseek" | "kimi" | "claudecode" | "ollama" | "custom"
+export type ModelCapability = "llm" | "embedding" | "vision"
+
+export interface CompanyModel {
+  id: string
+  companyId: string
+  name: string
+  provider: ModelProvider
+  model: string
+  endpoint: string
+  apiKeySet: boolean
+  capabilities: ModelCapability[]
+  isDefaultLlm: boolean
+  isDefaultEmbedding: boolean
+  isDefaultVision: boolean
+  createdAt: string
+  updatedAt: string
 }
 
 export interface IngestJob {
@@ -79,6 +110,21 @@ export interface WikiTreeGroup {
     sources: string[]
     images: ImageAsset[]
   }>
+}
+
+export interface WikiPage {
+  id: string
+  companyId: string
+  kbId: string
+  path: string
+  title: string
+  type: string
+  content: string
+  sha256: string
+  sources: string[]
+  images: ImageAsset[]
+  createdAt: string
+  updatedAt: string
 }
 
 export interface SearchResult {
@@ -145,6 +191,7 @@ export interface Capabilities {
     embeddingConfigured: boolean
     model: string
     embeddingModel: string
+    visionModel: string
   }
   searchProviders: Record<string, boolean>
 }

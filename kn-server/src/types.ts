@@ -2,6 +2,8 @@ export type JobStatus = "queued" | "running" | "completed" | "failed" | "cancell
 export type SourceStatus = "uploaded" | "parsing" | "queued" | "ingested" | "failed"
 export type ReviewStatus = "open" | "resolved" | "dismissed"
 export type CompanyMemberRole = "platform_admin" | "org_admin" | "agent_admin" | "member"
+export type ModelProvider = "openai" | "qwen" | "deepseek" | "kimi" | "claudecode" | "ollama" | "custom"
+export type ModelCapability = "llm" | "embedding" | "vision"
 
 export interface Identity {
   id: string
@@ -35,6 +37,22 @@ export interface CompanyMember {
   updatedAt: string
 }
 
+export interface CompanyModel {
+  id: string
+  companyId: string
+  name: string
+  provider: ModelProvider
+  model: string
+  endpoint: string
+  apiKey?: string
+  capabilities: ModelCapability[]
+  isDefaultLlm: boolean
+  isDefaultEmbedding: boolean
+  isDefaultVision: boolean
+  createdAt: string
+  updatedAt: string
+}
+
 export interface AuthSession {
   id: string
   tokenHash: string
@@ -56,6 +74,9 @@ export interface AuthContext {
 export interface KnowledgeBase {
   id: string
   companyId: string
+  createdBy: string
+  visibility: "company" | "creator_only"
+  type: "llm_wiki"
   name: string
   description: string
   createdAt: string
@@ -65,9 +86,13 @@ export interface KnowledgeBase {
 
 export interface SourceDocument {
   id: string
+  companyId: string
   kbId: string
+  root: "raw" | "wiki"
   fileName: string
   relativePath: string
+  parentPath: string
+  uploadBatchId?: string
   storageKey: string
   contentType: string
   size: number
@@ -81,6 +106,7 @@ export interface SourceDocument {
 
 export interface IngestJob {
   id: string
+  companyId: string
   kbId: string
   sourceId: string
   status: JobStatus
@@ -100,6 +126,7 @@ export interface IngestJob {
 
 export interface WikiPage {
   id: string
+  companyId: string
   kbId: string
   path: string
   title: string
@@ -113,6 +140,7 @@ export interface WikiPage {
 }
 
 export interface WikiLink {
+  companyId: string
   kbId: string
   sourcePageId: string
   targetPageId: string
@@ -120,6 +148,7 @@ export interface WikiLink {
 }
 
 export interface PageSource {
+  companyId: string
   kbId: string
   pageId: string
   sourceId: string
@@ -127,6 +156,7 @@ export interface PageSource {
 
 export interface PageChunk {
   id: string
+  companyId: string
   kbId: string
   pageId: string
   text: string
@@ -137,6 +167,7 @@ export interface PageChunk {
 
 export interface ImageAsset {
   id: string
+  companyId: string
   kbId: string
   sourceId: string
   pageId?: string
@@ -151,6 +182,7 @@ export interface ImageAsset {
 
 export interface ReviewItem {
   id: string
+  companyId: string
   kbId: string
   sourceId?: string
   pageId?: string
@@ -166,6 +198,7 @@ export interface ReviewItem {
 
 export interface ChatMessage {
   id: string
+  companyId: string
   kbId: string
   conversationId: string
   role: "user" | "assistant"

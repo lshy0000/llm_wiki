@@ -108,7 +108,7 @@ export class IngestService {
         const imageId = id("img")
         const mediaKey = pathJoinKey("wiki/media", source.id, extracted.fileName)
         await this.storage.writeObject(job.kbId, mediaKey, extracted.bytes)
-        const caption = await this.llm.captionImage({
+        const caption = await this.llm.captionImageForCompany(source.companyId, {
           fileName: extracted.fileName,
           mediaType: extracted.mediaType,
           bytes: extracted.bytes,
@@ -116,6 +116,7 @@ export class IngestService {
         })
         const asset: ImageAsset = {
           id: imageId,
+          companyId: source.companyId,
           kbId: job.kbId,
           sourceId: source.id,
           storageKey: mediaKey,
@@ -141,7 +142,8 @@ export class IngestService {
 
       await update({ progress: 36, stage: "Step 1: LLM analysis" })
       this.ensureNotCancelled(job.id)
-      const analysis = await this.llm.complete(
+      const analysis = await this.llm.completeForCompany(
+        source.companyId,
         [
           {
             role: "system",
@@ -155,12 +157,13 @@ export class IngestService {
 
       await update({ progress: 58, stage: "Step 2: wiki page generation", analysis })
       this.ensureNotCancelled(job.id)
-      const generation = await this.llm.complete(
+      const generation = await this.llm.completeForCompany(
+        source.companyId,
         [
           {
             role: "system",
             content:
-              "Generate llm_wiki FILE and REVIEW blocks. FILE blocks must be fenced as ```FILE wiki/...md. Every page must include YAML frontmatter with type, title, and sources. Use [[wikilink]] relations and cite the source id.",
+              "Generate llm_wiki FILE and REVIEW blocks. FILE blocks must be fenced as ```FILE wiki/...md. Every page must include YAML frontmatter with type, title, sources, source_path, and folder_context. Use [[wikilink]] relations and cite the source id.",
           },
           {
             role: "user",
@@ -170,7 +173,7 @@ export class IngestService {
             ].join("\n\n---\n\n"),
           },
         ],
-        this.fallbackGeneration(source.relativePath, parsed.text, source.id, imageAssets),
+        this.fallbackGeneration(source.relativePath, parsed.text, source.id, source.folderContext, imageAssets),
         3200,
       )
 
@@ -178,7 +181,7 @@ export class IngestService {
       const blocks = parseFileBlocks(generation)
       const fileBlocks = blocks.filter((block) => block.kind === "file" && block.path)
       if (fileBlocks.length === 0) {
-        const fallback = buildFallbackWikiPage(source.fileName, parsed.text + imageSection, source.id)
+        const fallback = buildFallbackWikiPage(source.relativePath, parsed.text + imageSection, source.id, source.folderContext)
         fileBlocks.push({ kind: "file", path: fallback.path, content: fallback.content })
       }
 
@@ -194,9 +197,11 @@ export class IngestService {
         }
         await this.storage.writeObject(job.kbId, pagePath, content)
         const page = this.buildPage(job.kbId, pagePath, content, source.id, imageAssets)
+        page.companyId = source.companyId
         await this.repo.upsertPage(page)
-        await this.repo.replacePageSources(job.kbId, page.id, [{ kbId: job.kbId, pageId: page.id, sourceId: source.id }])
+        await this.repo.replacePageSources(job.kbId, page.id, [{ companyId: source.companyId, kbId: job.kbId, pageId: page.id, sourceId: source.id }])
         const links: WikiLink[] = extractWikiLinks(content).map((raw) => ({
+          companyId: source.companyId,
           kbId: job.kbId,
           sourcePageId: page.id,
           targetPageId: this.resolveTarget(raw, pageIds),
@@ -211,6 +216,7 @@ export class IngestService {
       for (const block of blocks.filter((item) => item.kind === "review")) {
         const review: ReviewItem = {
           id: id("rev"),
+          companyId: source.companyId,
           kbId: job.kbId,
           sourceId: source.id,
           kind: "llm-review",
@@ -259,8 +265,8 @@ export class IngestService {
     ].filter(Boolean).join("\n")
   }
 
-  private fallbackGeneration(sourcePath: string, text: string, sourceId: string, images: ImageAsset[]): string {
-    const page = buildFallbackWikiPage(sourcePath, text, sourceId)
+  private fallbackGeneration(sourcePath: string, text: string, sourceId: string, folderContext: string, images: ImageAsset[]): string {
+    const page = buildFallbackWikiPage(sourcePath, text, sourceId, folderContext)
     const imageText = images.length > 0
       ? `\n\n## Multimodal Image Notes\n\n${images.map((image) => `- ${image.caption}`).join("\n")}`
       : ""
@@ -279,6 +285,7 @@ export class IngestService {
     const now = nowIso()
     return {
       id: pageIdFromPath(pagePath),
+      companyId: images[0]?.companyId ?? "",
       kbId,
       path: pagePath,
       title: fm.title,
@@ -293,17 +300,20 @@ export class IngestService {
   }
 
   private async buildChunks(kbId: string, pageId: string, content: string): Promise<PageChunk[]> {
+    const companyId = (await this.repo.getKnowledgeBase(kbId))?.companyId
+    if (!companyId) throw new Error("Knowledge base not found")
     const chunks: PageChunk[] = []
     let ordinal = 0
     for (const text of chunkText(content)) {
       chunks.push({
         id: id("chk"),
+        companyId,
         kbId,
         pageId,
         text,
         ordinal,
         tokens: tokenize(text),
-        embedding: await this.llm.embed(text),
+        embedding: await this.llm.embedForCompany(companyId, text),
       })
       ordinal += 1
     }
@@ -333,7 +343,9 @@ export class IngestService {
       .join("\n\n")
     const content = `# Wiki Index\n\n${sections}\n`
     await this.storage.writeObject(kbId, "wiki/index.md", content)
-    await this.repo.upsertPage(this.buildPage(kbId, "wiki/index.md", content, "system", []))
+    const kb = await this.repo.getKnowledgeBase(kbId)
+    if (!kb) throw new Error("Knowledge base not found")
+    await this.repo.upsertPage({ ...this.buildPage(kbId, "wiki/index.md", content, "system", []), companyId: kb.companyId })
   }
 
   private ensureNotCancelled(jobId: string): void {

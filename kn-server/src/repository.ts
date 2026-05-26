@@ -7,6 +7,7 @@ import type {
   AuthSession,
   ChatMessage,
   Company,
+  CompanyModel,
   CompanyMember,
   CompanyMemberRole,
   Identity,
@@ -28,6 +29,7 @@ export interface KnowledgeRepository {
   init(): Promise<void>
   close(): Promise<void>
   ensureDefaultCompany(): Promise<Company>
+  ensureEnvironmentModels(companyId: string): Promise<void>
   upsertIdentity(input: {
     provider: "ldap" | "local"
     providerSubject: string
@@ -40,6 +42,9 @@ export interface KnowledgeRepository {
   findIdentityByLoginIdentifier(loginIdentifier: string): Promise<Identity | undefined>
   countCompanyMembers(companyId: string): Promise<number>
   ensureCompanyMember(companyId: string, identityId: string, role: CompanyMemberRole): Promise<CompanyMember>
+  listCompanyModels(companyId: string): Promise<CompanyModel[]>
+  getDefaultCompanyModel(companyId: string, capability: "llm" | "embedding" | "vision"): Promise<CompanyModel | undefined>
+  saveCompanyModel(model: CompanyModel): Promise<CompanyModel>
   createSession(input: {
     tokenHash: string
     identityId: string
@@ -49,7 +54,7 @@ export interface KnowledgeRepository {
   }): Promise<AuthSession>
   getSessionByTokenHash(tokenHash: string): Promise<AuthContext | undefined>
   deleteSession(tokenHash: string): Promise<void>
-  listKnowledgeBases(companyId?: string): Promise<KnowledgeBase[]>
+  listKnowledgeBases(companyId?: string, identityId?: string): Promise<KnowledgeBase[]>
   getKnowledgeBase(kbId: string): Promise<KnowledgeBase | undefined>
   saveKnowledgeBase(kb: KnowledgeBase): Promise<KnowledgeBase>
   bumpDataVersion(kbId: string): Promise<void>
@@ -119,6 +124,17 @@ function parseVector(value: unknown): number[] | undefined {
   return clean.split(",").map((item) => Number(item.trim())).filter((item) => Number.isFinite(item))
 }
 
+function providerFromModel(model: string, endpoint: string): CompanyModel["provider"] {
+  const value = `${model} ${endpoint}`.toLowerCase()
+  if (value.includes("qwen") || value.includes("dashscope") || value.includes("aliyun")) return "qwen"
+  if (value.includes("deepseek")) return "deepseek"
+  if (value.includes("kimi") || value.includes("moonshot")) return "kimi"
+  if (value.includes("claude") || value.includes("anthropic")) return "claudecode"
+  if (value.includes("ollama") || endpoint.includes("11434")) return "ollama"
+  if (value.includes("openai") || value.includes("gpt-")) return "openai"
+  return "custom"
+}
+
 export class PostgresRepository implements KnowledgeRepository {
   private readonly pool: PgPool
 
@@ -171,15 +187,146 @@ export class PostgresRepository implements KnowledgeRepository {
     return this.mapCompany(inserted.rows[0])
   }
 
+  async ensureEnvironmentModels(companyId: string): Promise<void> {
+    const existing = await this.listCompanyModels(companyId)
+    if (existing.length > 0) return
+
+    const chatEndpoint = process.env.KN_LLM_ENDPOINT ?? process.env.LLM_ENDPOINT ?? ""
+    const chatModel = process.env.KN_LLM_MODEL ?? process.env.LLM_MODEL ?? "gpt-4o-mini"
+    const chatApiKey = process.env.KN_LLM_API_KEY ?? process.env.LLM_API_KEY ?? ""
+    const chatNow = nowIso()
+    await this.saveCompanyModel({
+      id: id("mdl"),
+      companyId,
+      name: "默认 LLM / Vision",
+      provider: providerFromModel(chatModel, chatEndpoint),
+      model: chatModel,
+      endpoint: chatEndpoint,
+      apiKey: chatApiKey || undefined,
+      capabilities: ["llm", "vision"],
+      isDefaultLlm: true,
+      isDefaultEmbedding: false,
+      isDefaultVision: true,
+      createdAt: chatNow,
+      updatedAt: chatNow,
+    })
+
+    const embeddingEndpoint = process.env.KN_EMBEDDING_ENDPOINT ?? process.env.KN_LLM_ENDPOINT ?? ""
+    const embeddingModel = process.env.KN_EMBEDDING_MODEL ?? "text-embedding-3-small"
+    const embeddingApiKey = process.env.KN_EMBEDDING_API_KEY ?? chatApiKey
+    const embeddingNow = nowIso()
+    await this.saveCompanyModel({
+      id: id("mdl"),
+      companyId,
+      name: "默认 Embedding",
+      provider: providerFromModel(embeddingModel, embeddingEndpoint),
+      model: embeddingModel,
+      endpoint: embeddingEndpoint,
+      apiKey: embeddingApiKey || undefined,
+      capabilities: ["embedding"],
+      isDefaultLlm: false,
+      isDefaultEmbedding: true,
+      isDefaultVision: false,
+      createdAt: embeddingNow,
+      updatedAt: embeddingNow,
+    })
+  }
+
   private async ensureSchemaCompatibility(): Promise<void> {
     await this.pool.query(`
       ALTER TABLE identities ADD COLUMN IF NOT EXISTS password_hash TEXT;
       ALTER TABLE identities ADD COLUMN IF NOT EXISTS is_platform_admin BOOLEAN NOT NULL DEFAULT FALSE;
+
+      CREATE TABLE IF NOT EXISTS company_models (
+        id TEXT PRIMARY KEY,
+        company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        provider TEXT NOT NULL CHECK (provider IN ('openai', 'qwen', 'deepseek', 'kimi', 'claudecode', 'ollama', 'custom')),
+        model TEXT NOT NULL,
+        endpoint TEXT NOT NULL DEFAULT '',
+        api_key TEXT,
+        capabilities TEXT[] NOT NULL DEFAULT '{}',
+        is_default_llm BOOLEAN NOT NULL DEFAULT FALSE,
+        is_default_embedding BOOLEAN NOT NULL DEFAULT FALSE,
+        is_default_vision BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMPTZ NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS company_models_company_idx ON company_models(company_id, updated_at DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS company_models_default_llm_uidx ON company_models(company_id) WHERE is_default_llm;
+      CREATE UNIQUE INDEX IF NOT EXISTS company_models_default_embedding_uidx ON company_models(company_id) WHERE is_default_embedding;
+      CREATE UNIQUE INDEX IF NOT EXISTS company_models_default_vision_uidx ON company_models(company_id) WHERE is_default_vision;
+
       ALTER TABLE company_members DROP CONSTRAINT IF EXISTS company_members_role_check;
       UPDATE company_members SET role = 'org_admin' WHERE role = 'company_admin';
       ALTER TABLE company_members
         ADD CONSTRAINT company_members_role_check
         CHECK (role IN ('platform_admin', 'org_admin', 'agent_admin', 'member'));
+
+      ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS created_by TEXT REFERENCES identities(id) ON DELETE SET NULL;
+      ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS visibility TEXT NOT NULL DEFAULT 'company';
+      ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS type TEXT NOT NULL DEFAULT 'llm_wiki';
+      ALTER TABLE knowledge_bases DROP CONSTRAINT IF EXISTS knowledge_bases_visibility_check;
+      ALTER TABLE knowledge_bases ADD CONSTRAINT knowledge_bases_visibility_check CHECK (visibility IN ('company', 'creator_only'));
+      ALTER TABLE knowledge_bases DROP CONSTRAINT IF EXISTS knowledge_bases_type_check;
+      ALTER TABLE knowledge_bases ADD CONSTRAINT knowledge_bases_type_check CHECK (type = 'llm_wiki');
+
+      ALTER TABLE sources ADD COLUMN IF NOT EXISTS company_id TEXT REFERENCES companies(id) ON DELETE CASCADE;
+      ALTER TABLE sources ADD COLUMN IF NOT EXISTS root TEXT NOT NULL DEFAULT 'raw';
+      ALTER TABLE sources ADD COLUMN IF NOT EXISTS parent_path TEXT NOT NULL DEFAULT '';
+      ALTER TABLE sources ADD COLUMN IF NOT EXISTS upload_batch_id TEXT;
+      UPDATE sources s SET company_id = kb.company_id FROM knowledge_bases kb WHERE s.kb_id = kb.id AND s.company_id IS NULL;
+      UPDATE sources SET root = 'raw' WHERE root IS NULL OR root = '';
+      UPDATE sources SET parent_path = regexp_replace(relative_path, '/[^/]+$', '') WHERE parent_path = '' AND relative_path LIKE '%/%';
+      ALTER TABLE sources ALTER COLUMN company_id SET NOT NULL;
+      ALTER TABLE sources DROP CONSTRAINT IF EXISTS sources_root_check;
+      ALTER TABLE sources ADD CONSTRAINT sources_root_check CHECK (root IN ('raw', 'wiki'));
+
+      ALTER TABLE ingest_jobs ADD COLUMN IF NOT EXISTS company_id TEXT REFERENCES companies(id) ON DELETE CASCADE;
+      UPDATE ingest_jobs j SET company_id = kb.company_id FROM knowledge_bases kb WHERE j.kb_id = kb.id AND j.company_id IS NULL;
+      ALTER TABLE ingest_jobs ALTER COLUMN company_id SET NOT NULL;
+
+      ALTER TABLE wiki_pages ADD COLUMN IF NOT EXISTS company_id TEXT REFERENCES companies(id) ON DELETE CASCADE;
+      UPDATE wiki_pages p SET company_id = kb.company_id FROM knowledge_bases kb WHERE p.kb_id = kb.id AND p.company_id IS NULL;
+      ALTER TABLE wiki_pages ALTER COLUMN company_id SET NOT NULL;
+
+      ALTER TABLE wiki_links ADD COLUMN IF NOT EXISTS company_id TEXT REFERENCES companies(id) ON DELETE CASCADE;
+      UPDATE wiki_links l SET company_id = kb.company_id FROM knowledge_bases kb WHERE l.kb_id = kb.id AND l.company_id IS NULL;
+      ALTER TABLE wiki_links ALTER COLUMN company_id SET NOT NULL;
+
+      ALTER TABLE page_sources ADD COLUMN IF NOT EXISTS company_id TEXT REFERENCES companies(id) ON DELETE CASCADE;
+      UPDATE page_sources ps SET company_id = kb.company_id FROM knowledge_bases kb WHERE ps.kb_id = kb.id AND ps.company_id IS NULL;
+      ALTER TABLE page_sources ALTER COLUMN company_id SET NOT NULL;
+
+      ALTER TABLE page_chunks ADD COLUMN IF NOT EXISTS company_id TEXT REFERENCES companies(id) ON DELETE CASCADE;
+      UPDATE page_chunks pc SET company_id = kb.company_id FROM knowledge_bases kb WHERE pc.kb_id = kb.id AND pc.company_id IS NULL;
+      ALTER TABLE page_chunks ALTER COLUMN company_id SET NOT NULL;
+
+      ALTER TABLE image_assets ADD COLUMN IF NOT EXISTS company_id TEXT REFERENCES companies(id) ON DELETE CASCADE;
+      UPDATE image_assets i SET company_id = kb.company_id FROM knowledge_bases kb WHERE i.kb_id = kb.id AND i.company_id IS NULL;
+      ALTER TABLE image_assets ALTER COLUMN company_id SET NOT NULL;
+
+      ALTER TABLE review_items ADD COLUMN IF NOT EXISTS company_id TEXT REFERENCES companies(id) ON DELETE CASCADE;
+      UPDATE review_items r SET company_id = kb.company_id FROM knowledge_bases kb WHERE r.kb_id = kb.id AND r.company_id IS NULL;
+      ALTER TABLE review_items ALTER COLUMN company_id SET NOT NULL;
+
+      ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS company_id TEXT REFERENCES companies(id) ON DELETE CASCADE;
+      UPDATE chat_messages c SET company_id = kb.company_id FROM knowledge_bases kb WHERE c.kb_id = kb.id AND c.company_id IS NULL;
+      ALTER TABLE chat_messages ALTER COLUMN company_id SET NOT NULL;
+
+      ALTER TABLE ingest_cache ADD COLUMN IF NOT EXISTS company_id TEXT REFERENCES companies(id) ON DELETE CASCADE;
+      UPDATE ingest_cache ic SET company_id = kb.company_id FROM knowledge_bases kb WHERE ic.kb_id = kb.id AND ic.company_id IS NULL;
+      ALTER TABLE ingest_cache ALTER COLUMN company_id SET NOT NULL;
+
+      WITH ranked_sources AS (
+        SELECT id, row_number() OVER (
+          PARTITION BY company_id, kb_id, root, relative_path
+          ORDER BY updated_at DESC, created_at DESC, id DESC
+        ) AS rn
+        FROM sources
+      )
+      DELETE FROM sources s USING ranked_sources r WHERE s.id = r.id AND r.rn > 1;
+      CREATE UNIQUE INDEX IF NOT EXISTS sources_scope_path_uidx ON sources(company_id, kb_id, root, relative_path);
     `)
   }
 
@@ -252,6 +399,84 @@ export class PostgresRepository implements KnowledgeRepository {
       [id("mem"), companyId, identityId, role, now],
     )
     return this.mapMember(result.rows[0])
+  }
+
+  async listCompanyModels(companyId: string): Promise<CompanyModel[]> {
+    const result = await this.pool.query<Row>(
+      "SELECT * FROM company_models WHERE company_id = $1 ORDER BY updated_at DESC, created_at DESC",
+      [companyId],
+    )
+    return result.rows.map((row) => this.mapCompanyModel(row))
+  }
+
+  async getDefaultCompanyModel(companyId: string, capability: "llm" | "embedding" | "vision"): Promise<CompanyModel | undefined> {
+    const column = capability === "llm" ? "is_default_llm" : capability === "embedding" ? "is_default_embedding" : "is_default_vision"
+    const result = await this.pool.query<Row>(
+      `SELECT * FROM company_models
+       WHERE company_id = $1
+         AND ${column} = TRUE
+         AND $2 = ANY(capabilities)
+       ORDER BY updated_at DESC
+       LIMIT 1`,
+      [companyId, capability],
+    )
+    return result.rows[0] ? this.mapCompanyModel(result.rows[0]) : undefined
+  }
+
+  async saveCompanyModel(model: CompanyModel): Promise<CompanyModel> {
+    const client = await this.pool.connect()
+    try {
+      await client.query("BEGIN")
+      if (model.isDefaultLlm) {
+        await client.query("UPDATE company_models SET is_default_llm = FALSE, updated_at = $2 WHERE company_id = $1", [model.companyId, model.updatedAt])
+      }
+      if (model.isDefaultEmbedding) {
+        await client.query("UPDATE company_models SET is_default_embedding = FALSE, updated_at = $2 WHERE company_id = $1", [model.companyId, model.updatedAt])
+      }
+      if (model.isDefaultVision) {
+        await client.query("UPDATE company_models SET is_default_vision = FALSE, updated_at = $2 WHERE company_id = $1", [model.companyId, model.updatedAt])
+      }
+      const result = await client.query<Row>(
+        `INSERT INTO company_models
+           (id, company_id, name, provider, model, endpoint, api_key, capabilities,
+            is_default_llm, is_default_embedding, is_default_vision, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+         ON CONFLICT (id)
+         DO UPDATE SET name = EXCLUDED.name,
+                       provider = EXCLUDED.provider,
+                       model = EXCLUDED.model,
+                       endpoint = EXCLUDED.endpoint,
+                       api_key = COALESCE(EXCLUDED.api_key, company_models.api_key),
+                       capabilities = EXCLUDED.capabilities,
+                       is_default_llm = EXCLUDED.is_default_llm,
+                       is_default_embedding = EXCLUDED.is_default_embedding,
+                       is_default_vision = EXCLUDED.is_default_vision,
+                       updated_at = EXCLUDED.updated_at
+         RETURNING *`,
+        [
+          model.id,
+          model.companyId,
+          model.name,
+          model.provider,
+          model.model,
+          model.endpoint,
+          model.apiKey ?? null,
+          model.capabilities,
+          model.isDefaultLlm,
+          model.isDefaultEmbedding,
+          model.isDefaultVision,
+          model.createdAt,
+          model.updatedAt,
+        ],
+      )
+      await client.query("COMMIT")
+      return this.mapCompanyModel(result.rows[0])
+    } catch (err) {
+      await client.query("ROLLBACK")
+      throw err
+    } finally {
+      client.release()
+    }
   }
 
   async createSession(input: {
@@ -339,9 +564,15 @@ export class PostgresRepository implements KnowledgeRepository {
     await this.pool.query("DELETE FROM auth_sessions WHERE token_hash = $1", [tokenHash])
   }
 
-  async listKnowledgeBases(companyId?: string): Promise<KnowledgeBase[]> {
+  async listKnowledgeBases(companyId?: string, identityId?: string): Promise<KnowledgeBase[]> {
     const result = companyId
-      ? await this.pool.query<Row>("SELECT * FROM knowledge_bases WHERE company_id = $1 ORDER BY updated_at DESC", [companyId])
+      ? await this.pool.query<Row>(
+        `SELECT * FROM knowledge_bases
+         WHERE company_id = $1
+           AND ($2::text IS NULL OR visibility = 'company' OR created_by = $2)
+         ORDER BY updated_at DESC`,
+        [companyId, identityId ?? null],
+      )
       : await this.pool.query<Row>("SELECT * FROM knowledge_bases ORDER BY updated_at DESC")
     return result.rows.map((row) => this.mapKnowledgeBase(row))
   }
@@ -353,16 +584,20 @@ export class PostgresRepository implements KnowledgeRepository {
 
   async saveKnowledgeBase(kb: KnowledgeBase): Promise<KnowledgeBase> {
     const result = await this.pool.query<Row>(
-      `INSERT INTO knowledge_bases (id, company_id, name, description, created_at, updated_at, data_version)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO knowledge_bases
+         (id, company_id, created_by, visibility, type, name, description, created_at, updated_at, data_version)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        ON CONFLICT (id)
        DO UPDATE SET company_id = EXCLUDED.company_id,
+                     created_by = EXCLUDED.created_by,
+                     visibility = EXCLUDED.visibility,
+                     type = EXCLUDED.type,
                      name = EXCLUDED.name,
                      description = EXCLUDED.description,
                      updated_at = EXCLUDED.updated_at,
                      data_version = EXCLUDED.data_version
        RETURNING *`,
-      [kb.id, kb.companyId, kb.name, kb.description, kb.createdAt, kb.updatedAt, kb.dataVersion],
+      [kb.id, kb.companyId, kb.createdBy, kb.visibility, kb.type, kb.name, kb.description, kb.createdAt, kb.updatedAt, kb.dataVersion],
     )
     return this.mapKnowledgeBase(result.rows[0])
   }
@@ -374,11 +609,13 @@ export class PostgresRepository implements KnowledgeRepository {
   async saveSource(source: SourceDocument): Promise<SourceDocument> {
     const result = await this.pool.query<Row>(
       `INSERT INTO sources
-         (id, kb_id, file_name, relative_path, storage_key, content_type, size, sha256, status, folder_context, created_at, updated_at, error)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-       ON CONFLICT (id)
+         (id, company_id, kb_id, root, file_name, relative_path, parent_path, upload_batch_id, storage_key,
+          content_type, size, sha256, status, folder_context, created_at, updated_at, error)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+       ON CONFLICT (company_id, kb_id, root, relative_path)
        DO UPDATE SET file_name = EXCLUDED.file_name,
-                     relative_path = EXCLUDED.relative_path,
+                     parent_path = EXCLUDED.parent_path,
+                     upload_batch_id = EXCLUDED.upload_batch_id,
                      storage_key = EXCLUDED.storage_key,
                      content_type = EXCLUDED.content_type,
                      size = EXCLUDED.size,
@@ -390,9 +627,13 @@ export class PostgresRepository implements KnowledgeRepository {
        RETURNING *`,
       [
         source.id,
+        source.companyId,
         source.kbId,
+        source.root,
         source.fileName,
         source.relativePath,
+        source.parentPath,
+        source.uploadBatchId ?? null,
         source.storageKey,
         source.contentType,
         source.size,
@@ -420,9 +661,9 @@ export class PostgresRepository implements KnowledgeRepository {
   async saveJob(job: IngestJob): Promise<IngestJob> {
     const result = await this.pool.query<Row>(
       `INSERT INTO ingest_jobs
-         (id, kb_id, source_id, status, progress, stage, attempts, cached, created_at, updated_at,
+         (id, company_id, kb_id, source_id, status, progress, stage, attempts, cached, created_at, updated_at,
           started_at, completed_at, cancelled_at, error, written_page_ids, analysis)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
        ON CONFLICT (id)
        DO UPDATE SET status = EXCLUDED.status,
                      progress = EXCLUDED.progress,
@@ -439,6 +680,7 @@ export class PostgresRepository implements KnowledgeRepository {
        RETURNING *`,
       [
         job.id,
+        job.companyId,
         job.kbId,
         job.sourceId,
         job.status,
@@ -479,8 +721,8 @@ export class PostgresRepository implements KnowledgeRepository {
   async upsertPage(page: WikiPage): Promise<WikiPage> {
     const result = await this.pool.query<Row>(
       `INSERT INTO wiki_pages
-         (id, kb_id, path, title, page_type, content, sha256, sources, images, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11)
+         (id, company_id, kb_id, path, title, page_type, content, sha256, sources, images, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12)
        ON CONFLICT (kb_id, id)
        DO UPDATE SET path = EXCLUDED.path,
                      title = EXCLUDED.title,
@@ -493,6 +735,7 @@ export class PostgresRepository implements KnowledgeRepository {
        RETURNING *`,
       [
         page.id,
+        page.companyId,
         page.kbId,
         page.path,
         page.title,
@@ -523,8 +766,8 @@ export class PostgresRepository implements KnowledgeRepository {
       await client.query("DELETE FROM wiki_links WHERE kb_id = $1 AND source_page_id = $2", [kbId, pageId])
       for (const link of links) {
         await client.query(
-          "INSERT INTO wiki_links (kb_id, source_page_id, target_page_id, target_raw) VALUES ($1, $2, $3, $4)",
-          [link.kbId, link.sourcePageId, link.targetPageId, link.targetRaw],
+          "INSERT INTO wiki_links (company_id, kb_id, source_page_id, target_page_id, target_raw) VALUES ($1, $2, $3, $4, $5)",
+          [link.companyId, link.kbId, link.sourcePageId, link.targetPageId, link.targetRaw],
         )
       }
     })
@@ -533,6 +776,7 @@ export class PostgresRepository implements KnowledgeRepository {
   async listLinks(kbId: string): Promise<WikiLink[]> {
     const result = await this.pool.query<Row>("SELECT * FROM wiki_links WHERE kb_id = $1", [kbId])
     return result.rows.map((row) => ({
+      companyId: String(row.company_id),
       kbId: String(row.kb_id),
       sourcePageId: String(row.source_page_id),
       targetPageId: String(row.target_page_id),
@@ -545,10 +789,10 @@ export class PostgresRepository implements KnowledgeRepository {
       await client.query("DELETE FROM page_sources WHERE kb_id = $1 AND page_id = $2", [kbId, pageId])
       for (const source of pageSources) {
         await client.query(
-          `INSERT INTO page_sources (kb_id, page_id, source_id)
-           VALUES ($1, $2, $3)
+          `INSERT INTO page_sources (company_id, kb_id, page_id, source_id)
+           VALUES ($1, $2, $3, $4)
            ON CONFLICT (kb_id, page_id, source_id) DO NOTHING`,
-          [source.kbId, source.pageId, source.sourceId],
+          [source.companyId, source.kbId, source.pageId, source.sourceId],
         )
       }
     })
@@ -557,6 +801,7 @@ export class PostgresRepository implements KnowledgeRepository {
   async listPageSources(kbId: string): Promise<PageSource[]> {
     const result = await this.pool.query<Row>("SELECT * FROM page_sources WHERE kb_id = $1", [kbId])
     return result.rows.map((row) => ({
+      companyId: String(row.company_id),
       kbId: String(row.kb_id),
       pageId: String(row.page_id),
       sourceId: String(row.source_id),
@@ -568,9 +813,9 @@ export class PostgresRepository implements KnowledgeRepository {
       await client.query("DELETE FROM page_chunks WHERE kb_id = $1 AND page_id = $2", [kbId, pageId])
       for (const chunk of chunks) {
         await client.query(
-          `INSERT INTO page_chunks (id, kb_id, page_id, text, ordinal, tokens, embedding)
-           VALUES ($1, $2, $3, $4, $5, $6, $7::vector)`,
-          [chunk.id, chunk.kbId, chunk.pageId, chunk.text, chunk.ordinal, chunk.tokens, vectorLiteral(chunk.embedding)],
+          `INSERT INTO page_chunks (id, company_id, kb_id, page_id, text, ordinal, tokens, embedding)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector)`,
+          [chunk.id, chunk.companyId, chunk.kbId, chunk.pageId, chunk.text, chunk.ordinal, chunk.tokens, vectorLiteral(chunk.embedding)],
         )
       }
     })
@@ -599,8 +844,8 @@ export class PostgresRepository implements KnowledgeRepository {
   async saveImage(image: ImageAsset): Promise<ImageAsset> {
     const result = await this.pool.query<Row>(
       `INSERT INTO image_assets
-         (id, kb_id, source_id, page_id, storage_key, file_name, media_type, caption, origin, source_page, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         (id, company_id, kb_id, source_id, page_id, storage_key, file_name, media_type, caption, origin, source_page, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        ON CONFLICT (id)
        DO UPDATE SET page_id = EXCLUDED.page_id,
                      storage_key = EXCLUDED.storage_key,
@@ -612,6 +857,7 @@ export class PostgresRepository implements KnowledgeRepository {
        RETURNING *`,
       [
         image.id,
+        image.companyId,
         image.kbId,
         image.sourceId,
         image.pageId ?? null,
@@ -635,8 +881,8 @@ export class PostgresRepository implements KnowledgeRepository {
   async addReview(review: ReviewItem): Promise<ReviewItem> {
     const result = await this.pool.query<Row>(
       `INSERT INTO review_items
-         (id, kb_id, source_id, page_id, kind, title, description, action, query, status, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         (id, company_id, kb_id, source_id, page_id, kind, title, description, action, query, status, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        ON CONFLICT (id)
        DO UPDATE SET source_id = EXCLUDED.source_id,
                      page_id = EXCLUDED.page_id,
@@ -650,6 +896,7 @@ export class PostgresRepository implements KnowledgeRepository {
        RETURNING *`,
       [
         review.id,
+        review.companyId,
         review.kbId,
         review.sourceId ?? null,
         review.pageId ?? null,
@@ -681,10 +928,10 @@ export class PostgresRepository implements KnowledgeRepository {
 
   async addChatMessage(message: ChatMessage): Promise<ChatMessage> {
     const result = await this.pool.query<Row>(
-      `INSERT INTO chat_messages (id, kb_id, conversation_id, role, content, citations, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
+      `INSERT INTO chat_messages (id, company_id, kb_id, conversation_id, role, content, citations, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
        RETURNING *`,
-      [message.id, message.kbId, message.conversationId, message.role, message.content, JSON.stringify(message.citations), message.createdAt],
+      [message.id, message.companyId, message.kbId, message.conversationId, message.role, message.content, JSON.stringify(message.citations), message.createdAt],
     )
     return this.mapChat(result.rows[0])
   }
@@ -704,15 +951,23 @@ export class PostgresRepository implements KnowledgeRepository {
   }
 
   async setIngestCache(kbId: string, sourceId: string, sourceHash: string, pageIds: string[]): Promise<void> {
+    const companyId = await this.companyIdForKnowledgeBase(kbId)
     await this.pool.query(
-      `INSERT INTO ingest_cache (kb_id, source_id, source_hash, page_ids, updated_at)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO ingest_cache (company_id, kb_id, source_id, source_hash, page_ids, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT (kb_id, source_id)
        DO UPDATE SET source_hash = EXCLUDED.source_hash,
                      page_ids = EXCLUDED.page_ids,
                      updated_at = EXCLUDED.updated_at`,
-      [kbId, sourceId, sourceHash, pageIds, nowIso()],
+      [companyId, kbId, sourceId, sourceHash, pageIds, nowIso()],
     )
+  }
+
+  private async companyIdForKnowledgeBase(kbId: string): Promise<string> {
+    const result = await this.pool.query<Row>("SELECT company_id FROM knowledge_bases WHERE id = $1", [kbId])
+    const companyId = result.rows[0]?.company_id
+    if (!companyId) throw new Error(`Knowledge base not found: ${kbId}`)
+    return String(companyId)
   }
 
   private async transaction(work: (client: PoolClient) => Promise<void>): Promise<void> {
@@ -735,6 +990,24 @@ export class PostgresRepository implements KnowledgeRepository {
       name: String(row.name),
       slug: String(row.slug),
       isDefault: Boolean(row.is_default),
+      createdAt: iso(row.created_at),
+      updatedAt: iso(row.updated_at),
+    }
+  }
+
+  private mapCompanyModel(row: Row): CompanyModel {
+    return {
+      id: String(row.id),
+      companyId: String(row.company_id),
+      name: String(row.name),
+      provider: String(row.provider) as CompanyModel["provider"],
+      model: String(row.model),
+      endpoint: String(row.endpoint ?? ""),
+      apiKey: row.api_key ? String(row.api_key) : undefined,
+      capabilities: textArray(row.capabilities) as CompanyModel["capabilities"],
+      isDefaultLlm: Boolean(row.is_default_llm),
+      isDefaultEmbedding: Boolean(row.is_default_embedding),
+      isDefaultVision: Boolean(row.is_default_vision),
       createdAt: iso(row.created_at),
       updatedAt: iso(row.updated_at),
     }
@@ -784,6 +1057,9 @@ export class PostgresRepository implements KnowledgeRepository {
     return {
       id: String(row.id),
       companyId: String(row.company_id),
+      createdBy: String(row.created_by ?? ""),
+      visibility: String(row.visibility ?? "company") as KnowledgeBase["visibility"],
+      type: "llm_wiki",
       name: String(row.name),
       description: String(row.description ?? ""),
       createdAt: iso(row.created_at),
@@ -795,9 +1071,13 @@ export class PostgresRepository implements KnowledgeRepository {
   private mapSource(row: Row): SourceDocument {
     return {
       id: String(row.id),
+      companyId: String(row.company_id),
       kbId: String(row.kb_id),
+      root: String(row.root ?? "raw") as SourceDocument["root"],
       fileName: String(row.file_name),
       relativePath: String(row.relative_path),
+      parentPath: String(row.parent_path ?? ""),
+      uploadBatchId: row.upload_batch_id ? String(row.upload_batch_id) : undefined,
       storageKey: String(row.storage_key),
       contentType: String(row.content_type),
       size: Number(row.size),
@@ -813,6 +1093,7 @@ export class PostgresRepository implements KnowledgeRepository {
   private mapJob(row: Row): IngestJob {
     return {
       id: String(row.id),
+      companyId: String(row.company_id),
       kbId: String(row.kb_id),
       sourceId: String(row.source_id),
       status: String(row.status) as IngestJob["status"],
@@ -834,6 +1115,7 @@ export class PostgresRepository implements KnowledgeRepository {
   private mapPage(row: Row): WikiPage {
     return {
       id: String(row.id),
+      companyId: String(row.company_id),
       kbId: String(row.kb_id),
       path: String(row.path),
       title: String(row.title),
@@ -850,6 +1132,7 @@ export class PostgresRepository implements KnowledgeRepository {
   private mapChunk(row: Row): PageChunk {
     return {
       id: String(row.id),
+      companyId: String(row.company_id),
       kbId: String(row.kb_id),
       pageId: String(row.page_id),
       text: String(row.text),
@@ -862,6 +1145,7 @@ export class PostgresRepository implements KnowledgeRepository {
   private mapImage(row: Row): ImageAsset {
     return {
       id: String(row.id),
+      companyId: String(row.company_id),
       kbId: String(row.kb_id),
       sourceId: String(row.source_id),
       pageId: row.page_id ? String(row.page_id) : undefined,
@@ -878,6 +1162,7 @@ export class PostgresRepository implements KnowledgeRepository {
   private mapReview(row: Row): ReviewItem {
     return {
       id: String(row.id),
+      companyId: String(row.company_id),
       kbId: String(row.kb_id),
       sourceId: row.source_id ? String(row.source_id) : undefined,
       pageId: row.page_id ? String(row.page_id) : undefined,
@@ -895,6 +1180,7 @@ export class PostgresRepository implements KnowledgeRepository {
   private mapChat(row: Row): ChatMessage {
     return {
       id: String(row.id),
+      companyId: String(row.company_id),
       kbId: String(row.kb_id),
       conversationId: String(row.conversation_id),
       role: String(row.role) as ChatMessage["role"],

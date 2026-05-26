@@ -43,7 +43,7 @@ export class SourceWatchService {
 
   private async scanKb(kbId: string): Promise<void> {
     const known = new Set((await this.repo.listSources(kbId)).map((source) => source.storageKey))
-    const files = this.flatten(await this.storage.listTree(kbId, "raw/sources"))
+    const files = this.flatten(await this.storage.listTree(kbId, "raw"))
     let queued = false
     for (const file of files) {
       if (file.isDirectory || known.has(file.path)) continue

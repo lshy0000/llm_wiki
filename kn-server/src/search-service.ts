@@ -70,7 +70,8 @@ export class SearchService {
   }
 
   private async vectorRank(kbId: string, pages: WikiPage[], query: string): Promise<Array<{ page: WikiPage; score: number }>> {
-    const queryEmbedding = await this.llm.embed(query)
+    const kb = await this.repo.getKnowledgeBase(kbId)
+    const queryEmbedding = kb ? await this.llm.embedForCompany(kb.companyId, query) : await this.llm.embed(query)
     if (!queryEmbedding) return []
     const pageById = new Map(pages.map((page) => [page.id, page]))
     return (await this.repo.searchPagesByVector(kbId, queryEmbedding, 20))
