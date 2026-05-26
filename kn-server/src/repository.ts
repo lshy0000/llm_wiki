@@ -29,12 +29,15 @@ export interface KnowledgeRepository {
   close(): Promise<void>
   ensureDefaultCompany(): Promise<Company>
   upsertIdentity(input: {
-    provider: "ldap"
+    provider: "ldap" | "local"
     providerSubject: string
     username: string
     displayName: string
     email?: string
+    passwordHash?: string
+    isPlatformAdmin?: boolean
   }): Promise<Identity>
+  findIdentityByLoginIdentifier(loginIdentifier: string): Promise<Identity | undefined>
   countCompanyMembers(companyId: string): Promise<number>
   ensureCompanyMember(companyId: string, identityId: string, role: CompanyMemberRole): Promise<CompanyMember>
   createSession(input: {
@@ -130,6 +133,7 @@ export class PostgresRepository implements KnowledgeRepository {
   async init(): Promise<void> {
     const schemaPath = fileURLToPath(new URL("../sql/001_init.sql", import.meta.url))
     await this.pool.query(await fs.readFile(schemaPath, "utf-8"))
+    await this.ensureSchemaCompatibility()
     await this.ensureDefaultCompany()
     await this.pool.query(
       "UPDATE ingest_jobs SET status = 'queued', stage = 'Recovered after server restart', updated_at = $1 WHERE status IN ('running', 'queued')",
@@ -144,7 +148,17 @@ export class PostgresRepository implements KnowledgeRepository {
 
   async ensureDefaultCompany(): Promise<Company> {
     const existing = await this.pool.query<Row>("SELECT * FROM companies WHERE is_default = TRUE LIMIT 1")
-    if (existing.rows[0]) return this.mapCompany(existing.rows[0])
+    if (existing.rows[0]) {
+      const desiredName = process.env.KN_DEFAULT_COMPANY_NAME ?? "Default"
+      if (String(existing.rows[0].name) !== desiredName) {
+        const updated = await this.pool.query<Row>(
+          "UPDATE companies SET name = $1, updated_at = $2 WHERE id = $3 RETURNING *",
+          [desiredName, nowIso(), existing.rows[0].id],
+        )
+        return this.mapCompany(updated.rows[0])
+      }
+      return this.mapCompany(existing.rows[0])
+    }
 
     const now = nowIso()
     const inserted = await this.pool.query<Row>(
@@ -152,31 +166,74 @@ export class PostgresRepository implements KnowledgeRepository {
        VALUES ($1, $2, $3, TRUE, $4, $4)
        ON CONFLICT (slug) DO UPDATE SET is_default = TRUE, updated_at = EXCLUDED.updated_at
        RETURNING *`,
-      [id("cmp"), process.env.KN_DEFAULT_COMPANY_NAME ?? "Default Company", "default", now],
+      [id("cmp"), process.env.KN_DEFAULT_COMPANY_NAME ?? "Default", "default", now],
     )
     return this.mapCompany(inserted.rows[0])
   }
 
+  private async ensureSchemaCompatibility(): Promise<void> {
+    await this.pool.query(`
+      ALTER TABLE identities ADD COLUMN IF NOT EXISTS password_hash TEXT;
+      ALTER TABLE identities ADD COLUMN IF NOT EXISTS is_platform_admin BOOLEAN NOT NULL DEFAULT FALSE;
+      ALTER TABLE company_members DROP CONSTRAINT IF EXISTS company_members_role_check;
+      UPDATE company_members SET role = 'org_admin' WHERE role = 'company_admin';
+      ALTER TABLE company_members
+        ADD CONSTRAINT company_members_role_check
+        CHECK (role IN ('platform_admin', 'org_admin', 'agent_admin', 'member'));
+    `)
+  }
+
   async upsertIdentity(input: {
-    provider: "ldap"
+    provider: "ldap" | "local"
     providerSubject: string
     username: string
     displayName: string
     email?: string
+    passwordHash?: string
+    isPlatformAdmin?: boolean
   }): Promise<Identity> {
     const now = nowIso()
     const result = await this.pool.query<Row>(
-      `INSERT INTO identities (id, provider, provider_subject, username, display_name, email, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+      `INSERT INTO identities
+         (id, provider, provider_subject, username, display_name, email, password_hash, is_platform_admin, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
        ON CONFLICT (provider, provider_subject)
        DO UPDATE SET username = EXCLUDED.username,
                      display_name = EXCLUDED.display_name,
                      email = EXCLUDED.email,
+                     password_hash = COALESCE(EXCLUDED.password_hash, identities.password_hash),
+                     is_platform_admin = identities.is_platform_admin OR EXCLUDED.is_platform_admin,
                      updated_at = EXCLUDED.updated_at
        RETURNING *`,
-      [id("idn"), input.provider, input.providerSubject, input.username, input.displayName, input.email ?? null, now],
+      [
+        id("idn"),
+        input.provider,
+        input.providerSubject,
+        input.username,
+        input.displayName,
+        input.email ?? null,
+        input.passwordHash ?? null,
+        input.isPlatformAdmin ?? false,
+        now,
+      ],
     )
     return this.mapIdentity(result.rows[0])
+  }
+
+  async findIdentityByLoginIdentifier(loginIdentifier: string): Promise<Identity | undefined> {
+    const value = loginIdentifier.trim()
+    if (!value) return undefined
+    const result = await this.pool.query<Row>(
+      `SELECT *
+       FROM identities
+       WHERE username = $1
+          OR lower(email) = lower($1)
+          OR ($2 = FALSE AND lower(email) LIKE lower($1 || '@%'))
+       ORDER BY is_platform_admin DESC, (password_hash IS NOT NULL) DESC, (provider = 'local') DESC, created_at ASC
+       LIMIT 1`,
+      [value, value.includes("@")],
+    )
+    return result.rows[0] ? this.mapIdentity(result.rows[0]) : undefined
   }
 
   async countCompanyMembers(companyId: string): Promise<number> {
@@ -219,7 +276,7 @@ export class PostgresRepository implements KnowledgeRepository {
       `SELECT
          s.id AS session_id, s.token_hash, s.identity_id AS session_identity_id,
          s.company_id AS session_company_id, s.member_id, s.expires_at, s.created_at AS session_created_at, s.last_seen_at,
-         i.id AS identity_id, i.provider, i.provider_subject, i.username, i.display_name, i.email,
+         i.id AS identity_id, i.provider, i.provider_subject, i.username, i.display_name, i.email, i.password_hash, i.is_platform_admin,
          i.created_at AS identity_created_at, i.updated_at AS identity_updated_at,
          c.id AS company_id, c.name AS company_name, c.slug, c.is_default,
          c.created_at AS company_created_at, c.updated_at AS company_updated_at,
@@ -253,6 +310,8 @@ export class PostgresRepository implements KnowledgeRepository {
         username: String(row.username),
         displayName: String(row.display_name),
         email: row.email ? String(row.email) : undefined,
+        passwordHash: row.password_hash ? String(row.password_hash) : undefined,
+        isPlatformAdmin: Boolean(row.is_platform_admin),
         createdAt: iso(row.identity_created_at),
         updatedAt: iso(row.identity_updated_at),
       },
@@ -684,11 +743,13 @@ export class PostgresRepository implements KnowledgeRepository {
   private mapIdentity(row: Row): Identity {
     return {
       id: String(row.id),
-      provider: "ldap",
+      provider: String(row.provider) as Identity["provider"],
       providerSubject: String(row.provider_subject),
       username: String(row.username),
       displayName: String(row.display_name),
       email: row.email ? String(row.email) : undefined,
+      passwordHash: row.password_hash ? String(row.password_hash) : undefined,
+      isPlatformAdmin: Boolean(row.is_platform_admin),
       createdAt: iso(row.created_at),
       updatedAt: iso(row.updated_at),
     }

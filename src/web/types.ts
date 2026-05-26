@@ -16,7 +16,8 @@ export interface AuthPayload {
     username: string
     displayName: string
     email?: string
-    role: "company_admin" | "member"
+    role: "platform_admin" | "org_admin" | "agent_admin" | "member"
+    isPlatformAdmin: boolean
   }
   company: {
     id: string

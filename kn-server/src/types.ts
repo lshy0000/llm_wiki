@@ -1,15 +1,17 @@
 export type JobStatus = "queued" | "running" | "completed" | "failed" | "cancelled"
 export type SourceStatus = "uploaded" | "parsing" | "queued" | "ingested" | "failed"
 export type ReviewStatus = "open" | "resolved" | "dismissed"
-export type CompanyMemberRole = "company_admin" | "member"
+export type CompanyMemberRole = "platform_admin" | "org_admin" | "agent_admin" | "member"
 
 export interface Identity {
   id: string
-  provider: "ldap"
+  provider: "ldap" | "local"
   providerSubject: string
   username: string
   displayName: string
   email?: string
+  passwordHash?: string
+  isPlatformAdmin: boolean
   createdAt: string
   updatedAt: string
 }

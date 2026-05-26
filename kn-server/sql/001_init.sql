@@ -7,6 +7,8 @@ CREATE TABLE IF NOT EXISTS identities (
   username TEXT NOT NULL,
   display_name TEXT NOT NULL,
   email TEXT,
+  password_hash TEXT,
+  is_platform_admin BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMPTZ NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL,
   UNIQUE (provider, provider_subject)
@@ -29,7 +31,7 @@ CREATE TABLE IF NOT EXISTS company_members (
   id TEXT PRIMARY KEY,
   company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   identity_id TEXT NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
-  role TEXT NOT NULL CHECK (role IN ('company_admin', 'member')),
+  role TEXT NOT NULL CHECK (role IN ('platform_admin', 'org_admin', 'agent_admin', 'member')),
   status TEXT NOT NULL CHECK (status IN ('active')),
   joined_at TIMESTAMPTZ NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL,
