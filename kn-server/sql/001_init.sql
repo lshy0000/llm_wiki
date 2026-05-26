@@ -84,8 +84,7 @@ CREATE TABLE IF NOT EXISTS knowledge_bases (
   name TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
   created_at TIMESTAMPTZ NOT NULL,
-  updated_at TIMESTAMPTZ NOT NULL,
-  data_version INTEGER NOT NULL DEFAULT 1
+  updated_at TIMESTAMPTZ NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS knowledge_bases_company_updated_idx ON knowledge_bases(company_id, updated_at DESC);

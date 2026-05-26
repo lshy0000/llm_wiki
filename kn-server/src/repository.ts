@@ -57,7 +57,7 @@ export interface KnowledgeRepository {
   listKnowledgeBases(companyId?: string, identityId?: string): Promise<KnowledgeBase[]>
   getKnowledgeBase(kbId: string): Promise<KnowledgeBase | undefined>
   saveKnowledgeBase(kb: KnowledgeBase): Promise<KnowledgeBase>
-  bumpDataVersion(kbId: string): Promise<void>
+  touchKnowledgeBase(kbId: string): Promise<void>
   saveSource(source: SourceDocument): Promise<SourceDocument>
   listSources(kbId: string): Promise<SourceDocument[]>
   getSource(sourceId: string): Promise<SourceDocument | undefined>
@@ -270,6 +270,7 @@ export class PostgresRepository implements KnowledgeRepository {
       ALTER TABLE knowledge_bases ADD CONSTRAINT knowledge_bases_visibility_check CHECK (visibility IN ('company', 'creator_only'));
       ALTER TABLE knowledge_bases DROP CONSTRAINT IF EXISTS knowledge_bases_type_check;
       ALTER TABLE knowledge_bases ADD CONSTRAINT knowledge_bases_type_check CHECK (type = 'llm_wiki');
+      ALTER TABLE knowledge_bases DROP COLUMN IF EXISTS data_version;
 
       ALTER TABLE sources ADD COLUMN IF NOT EXISTS company_id TEXT REFERENCES companies(id) ON DELETE CASCADE;
       ALTER TABLE sources ADD COLUMN IF NOT EXISTS root TEXT NOT NULL DEFAULT 'raw';
@@ -585,8 +586,8 @@ export class PostgresRepository implements KnowledgeRepository {
   async saveKnowledgeBase(kb: KnowledgeBase): Promise<KnowledgeBase> {
     const result = await this.pool.query<Row>(
       `INSERT INTO knowledge_bases
-         (id, company_id, created_by, visibility, type, name, description, created_at, updated_at, data_version)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         (id, company_id, created_by, visibility, type, name, description, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (id)
        DO UPDATE SET company_id = EXCLUDED.company_id,
                      created_by = EXCLUDED.created_by,
@@ -594,16 +595,15 @@ export class PostgresRepository implements KnowledgeRepository {
                      type = EXCLUDED.type,
                      name = EXCLUDED.name,
                      description = EXCLUDED.description,
-                     updated_at = EXCLUDED.updated_at,
-                     data_version = EXCLUDED.data_version
+                     updated_at = EXCLUDED.updated_at
        RETURNING *`,
-      [kb.id, kb.companyId, kb.createdBy, kb.visibility, kb.type, kb.name, kb.description, kb.createdAt, kb.updatedAt, kb.dataVersion],
+      [kb.id, kb.companyId, kb.createdBy, kb.visibility, kb.type, kb.name, kb.description, kb.createdAt, kb.updatedAt],
     )
     return this.mapKnowledgeBase(result.rows[0])
   }
 
-  async bumpDataVersion(kbId: string): Promise<void> {
-    await this.pool.query("UPDATE knowledge_bases SET data_version = data_version + 1, updated_at = $1 WHERE id = $2", [nowIso(), kbId])
+  async touchKnowledgeBase(kbId: string): Promise<void> {
+    await this.pool.query("UPDATE knowledge_bases SET updated_at = $1 WHERE id = $2", [nowIso(), kbId])
   }
 
   async saveSource(source: SourceDocument): Promise<SourceDocument> {
@@ -1064,7 +1064,6 @@ export class PostgresRepository implements KnowledgeRepository {
       description: String(row.description ?? ""),
       createdAt: iso(row.created_at),
       updatedAt: iso(row.updated_at),
-      dataVersion: Number(row.data_version),
     }
   }
 

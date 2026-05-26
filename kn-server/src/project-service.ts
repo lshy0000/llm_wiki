@@ -27,7 +27,6 @@ export class ProjectService {
       description: input.description?.trim() ?? "",
       createdAt: now,
       updatedAt: now,
-      dataVersion: 1,
     }
     await this.repo.saveKnowledgeBase(kb)
 
@@ -37,7 +36,7 @@ export class ProjectService {
         await this.repo.upsertPage(this.pageFromContent(kb, file.key, file.content, now))
       }
     }
-    await this.repo.bumpDataVersion(kb.id)
+    await this.repo.touchKnowledgeBase(kb.id)
     return (await this.repo.getKnowledgeBase(kb.id)) ?? kb
   }
 

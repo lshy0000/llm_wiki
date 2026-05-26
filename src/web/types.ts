@@ -8,7 +8,6 @@ export interface KnowledgeBase {
   description: string
   createdAt: string
   updatedAt: string
-  dataVersion: number
 }
 
 export interface AuthPayload {

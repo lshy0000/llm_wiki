@@ -1171,7 +1171,6 @@ function KnowledgeBaseDetail({
             <div className="flex items-center gap-2">
               <h1 className="truncate text-lg font-semibold">{kb.name}</h1>
               <span className="rounded bg-purple-50 px-2 py-1 text-xs text-purple-700">llm_wiki</span>
-              <span className="rounded bg-neutral-100 px-2 py-1 text-xs text-neutral-600">v{kb.dataVersion}</span>
             </div>
             <p className="mt-0.5 truncate text-xs text-neutral-500">/database/{kb.id} · {kb.visibility === "company" ? "全公司可见" : "仅创建者可见"}</p>
           </div>

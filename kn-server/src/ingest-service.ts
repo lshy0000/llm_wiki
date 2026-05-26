@@ -232,7 +232,7 @@ export class IngestService {
       await this.rebuildIndexPage(job.kbId)
       await this.repo.setIngestCache(job.kbId, source.id, source.sha256, writtenPageIds)
       await this.repo.saveSource({ ...source, status: "ingested", updatedAt: nowIso(), error: undefined })
-      await this.repo.bumpDataVersion(job.kbId)
+      await this.repo.touchKnowledgeBase(job.kbId)
       await update({
         status: "completed",
         progress: 100,
