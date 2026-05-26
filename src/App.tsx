@@ -1157,7 +1157,6 @@ function KnowledgeBaseDetail({
   const detailTabs: Array<{ key: DetailTab; label: string; icon: ReactElement }> = [
     { key: "graph", label: "知识图谱", icon: <Network className="h-4 w-4" /> },
     { key: "recall", label: "检索测试", icon: <MessageSquare className="h-4 w-4" /> },
-    { key: "structure", label: "知识导图", icon: <FileText className="h-4 w-4" /> },
     { key: "reviews", label: "审核研究", icon: <ClipboardList className="h-4 w-4" /> },
   ]
 
