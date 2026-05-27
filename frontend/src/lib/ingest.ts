@@ -19,6 +19,7 @@ import type { FileNode } from "@/types/wiki"
 import {
   extractAndSaveSourceImages,
   buildImageMarkdownSection,
+  buildVisualEvidenceMarkdown,
 } from "@/lib/extract-source-images"
 import { captionMarkdownImages, loadCaptionCache } from "@/lib/image-caption-pipeline"
 import type { MultimodalConfig } from "@/stores/wiki-store"
@@ -424,7 +425,12 @@ async function autoIngestImpl(
           const captionLlm = resolveCaptionConfig(mmCfg, llmConfig)
           if (captionLlm) {
             try {
-              await captionMarkdownImages(pp, sourceContent, captionLlm, {
+              const captionInput = ensureVisualEvidenceMarkdown(
+                sourceContent,
+                savedImages,
+                `${pp}/wiki/media/${sourceSummarySlug}/`,
+              )
+              await captionMarkdownImages(pp, captionInput, captionLlm, {
                 signal,
                 shouldCaption: (url) =>
                   url.startsWith(`${pp}/wiki/media/${sourceSummarySlug}/`),
@@ -537,11 +543,17 @@ async function autoIngestImpl(
   let enrichedSourceContent = sourceContent
   const mmCfg = useWikiStore.getState().multimodalConfig
   const captionLlm = resolveCaptionConfig(mmCfg, llmConfig)
+  const mediaPrefix = `${pp}/wiki/media/${sourceSummarySlug}/`
+  const sourceWithVisualEvidence = ensureVisualEvidenceMarkdown(
+    sourceContent,
+    savedImages,
+    mediaPrefix,
+  )
   if (!mmCfg.enabled && savedImages.length > 0) {
     // Strip `![alt](url)` references — match the same regex shape
     // we use elsewhere for image refs. Preserve a single space
     // where the ref used to sit so adjacent words don't fuse.
-    enrichedSourceContent = sourceContent.replace(
+    enrichedSourceContent = sourceWithVisualEvidence.replace(
       /!\[[^\]]*\]\([^)\s]+\)/g,
       " ",
     )
@@ -551,19 +563,18 @@ async function autoIngestImpl(
   } else if (
     captionLlm &&
     savedImages.length > 0 &&
-    /!\[\]\(/.test(sourceContent)
+    /!\[\]\(/.test(sourceWithVisualEvidence)
   ) {
     activity.updateItem(activityId, { detail: "Captioning images..." })
-    const ourMediaPrefix = `${pp}/wiki/media/${sourceSummarySlug}/`
     try {
-      const result = await captionMarkdownImages(pp, sourceContent, captionLlm, {
+      const result = await captionMarkdownImages(pp, sourceWithVisualEvidence, captionLlm, {
         signal,
         // Strict filter: only caption images we know we just
         // extracted into this source's media directory. Skips any
         // pre-existing markdown image refs the user may have typed
         // into the source content (e.g. for hand-authored .md
         // sources).
-        shouldCaption: (url) => url.startsWith(ourMediaPrefix),
+        shouldCaption: (url) => url.startsWith(mediaPrefix),
         urlToAbsPath: (url) => url, // already absolute in our extraction output
         concurrency: mmCfg.concurrency,
         onProgress: (done, total) =>
@@ -1397,6 +1408,7 @@ export function buildGenerationPrompt(
     "- Use [[wikilink]] syntax in the BODY for cross-references between pages",
     "- Use kebab-case filenames",
     "- Follow the analysis recommendations on what to emphasize",
+    "- Preserve source terminology and canonical names exactly; explain them in the output language instead of renaming them",
     "- If the analysis found connections to existing pages, add cross-references",
     "",
     "## Review block types",
@@ -1459,7 +1471,7 @@ export function buildGenerationPrompt(
     "4. DO NOT output markdown tables, bullet lists, or headings outside of FILE/REVIEW blocks.",
     "5. DO NOT output any trailing commentary after the last `---END FILE---` or `---END REVIEW---`.",
     "6. Between blocks, use only blank lines — no prose.",
-    "7. EVERY FILE block's content (titles, body, descriptions) MUST be in the mandatory output language specified below. No exceptions — not even for page names or section headings.",
+    "7. EVERY FILE block's explanatory content (body, descriptions, summaries, section wording) MUST be in the mandatory output language specified below. Preserve source terms and canonical names exactly even when they are in another language.",
     "",
     "If you start with anything other than `---FILE:`, the entire response will be discarded.",
     "",
@@ -2147,6 +2159,20 @@ async function injectImagesIntoSourceSummary(
       err instanceof Error ? err.message : err,
     )
   }
+}
+
+function ensureVisualEvidenceMarkdown(
+  sourceContent: string,
+  savedImages: { relPath: string; absPath: string; page: number | null }[],
+  mediaPrefix: string,
+): string {
+  if (savedImages.length === 0) return sourceContent
+  const alreadyHasCurrentMedia = sourceContent.includes(mediaPrefix) ||
+    savedImages.some((img) =>
+      sourceContent.includes(img.absPath) || sourceContent.includes(img.relPath),
+    )
+  if (alreadyHasCurrentMedia) return sourceContent
+  return sourceContent + buildVisualEvidenceMarkdown(savedImages, true)
 }
 
 /**

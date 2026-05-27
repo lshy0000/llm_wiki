@@ -66,6 +66,17 @@ export interface AuthSession {
   lastSeenAt: string
 }
 
+export interface UserApiKey {
+  id: string
+  identityId: string
+  companyId: string
+  name: string
+  keyHash: string
+  keyHint: string
+  createdAt: string
+  updatedAt: string
+}
+
 export interface AuthContext {
   session: AuthSession
   identity: Identity
@@ -177,7 +188,7 @@ export interface ImageAsset {
   fileName: string
   mediaType: string
   caption: string
-  origin: "pdf-embedded" | "markdown-image" | "standalone-image"
+  origin: "pdf-embedded" | "pdf-page-render" | "office-embedded" | "markdown-image" | "standalone-image"
   sourcePage?: number
   createdAt: string
 }
@@ -267,5 +278,26 @@ export interface ParsedDocument {
     bytes: Buffer
     origin: ImageAsset["origin"]
     sourcePage?: number
+    sourceSlide?: number
+    sourceSheet?: string
   }>
+  evidence: EvidenceBlock[]
+}
+
+export interface EvidenceBlock {
+  id: string
+  kind: "text" | "image" | "page" | "slide" | "table" | "folder" | "video"
+  sourcePath: string
+  locator?: {
+    page?: number
+    slide?: number
+    sheet?: string
+    startSec?: number
+    endSec?: number
+    chunk?: number
+  }
+  mediaKey?: string
+  text: string
+  hash: string
+  extractor: string
 }

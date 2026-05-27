@@ -14,6 +14,15 @@ export function sha256(input: Buffer | string): string {
   return createHash("sha256").update(input).digest("hex")
 }
 
+/** 目录树排序：文件夹在前，同类型按名称。 */
+export function compareFileTreeEntries(
+  a: { name: string; isDirectory: boolean },
+  b: { name: string; isDirectory: boolean },
+): number {
+  if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1
+  return a.name.localeCompare(b.name)
+}
+
 export function normalizeStorageKey(key: string): string {
   const normalized = key.replace(/\\/g, "/").replace(/^\/+/, "")
   const parts = normalized.split("/").filter(Boolean)
@@ -231,6 +240,21 @@ export function safeWikiPath(pagePath: string): string {
   return normalized
 }
 
+const ROOT_WIKI_FILES = new Set([
+  "wiki/index.md",
+  "wiki/log.md",
+  "wiki/overview.md",
+  "wiki/purpose.md",
+  "wiki/schema.md",
+])
+
+export function canonicalWikiPagePath(pagePath: string, content: string): string {
+  const normalized = safeWikiPath(pagePath)
+  if (ROOT_WIKI_FILES.has(normalized)) return normalized
+  const { type } = parseFrontmatter(content)
+  return pathJoinKey(relativeWikiDirForType(type), fileNameOf(normalized))
+}
+
 export function defaultWikiFiles(name: string): Array<{ key: string; content: string }> {
   const today = new Date().toISOString().slice(0, 10)
   return [
@@ -424,7 +448,7 @@ export function pathJoinKey(...parts: string[]): string {
 }
 
 export function isImageFile(fileName: string): boolean {
-  return /\.(png|jpe?g|webp|gif)$/i.test(fileName)
+  return /\.(png|jpe?g|webp|gif|bmp|tiff?|avif|heic|heif)$/i.test(fileName)
 }
 
 export function mediaTypeForFile(fileName: string): string {
@@ -432,7 +456,29 @@ export function mediaTypeForFile(fileName: string): string {
   if (lower.endsWith(".png")) return "image/png"
   if (lower.endsWith(".webp")) return "image/webp"
   if (lower.endsWith(".gif")) return "image/gif"
+  if (lower.endsWith(".bmp")) return "image/bmp"
+  if (lower.endsWith(".tif") || lower.endsWith(".tiff")) return "image/tiff"
+  if (lower.endsWith(".avif")) return "image/avif"
+  if (lower.endsWith(".heic")) return "image/heic"
+  if (lower.endsWith(".heif")) return "image/heif"
   return "image/jpeg"
+}
+
+export function objectContentTypeForFile(fileName: string): string {
+  const lower = fileName.toLowerCase()
+  if (isImageFile(lower)) return mediaTypeForFile(lower)
+  if (lower.endsWith(".pdf")) return "application/pdf"
+  if (lower.endsWith(".mp4")) return "video/mp4"
+  if (lower.endsWith(".webm")) return "video/webm"
+  if (lower.endsWith(".mov")) return "video/quicktime"
+  if (lower.endsWith(".avi")) return "video/x-msvideo"
+  if (lower.endsWith(".mkv")) return "video/x-matroska"
+  if (lower.endsWith(".m4v")) return "video/x-m4v"
+  if (lower.endsWith(".wmv")) return "video/x-ms-wmv"
+  if (lower.endsWith(".flv")) return "video/x-flv"
+  if (lower.endsWith(".md")) return "text/markdown; charset=utf-8"
+  if (lower.endsWith(".txt") || lower.endsWith(".json") || lower.endsWith(".csv") || lower.endsWith(".tsv")) return "text/plain; charset=utf-8"
+  return "application/octet-stream"
 }
 
 export function imageMarkdown(asset: ImageAsset): string {

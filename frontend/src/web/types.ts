@@ -11,6 +11,11 @@ export interface KnowledgeBase {
   updatedAt: string
 }
 
+/** 知识库类型在界面上的展示名（后端 type 仍为 llm_wiki）。 */
+export const KB_TYPE_LABEL: Record<KnowledgeBase["type"], string> = {
+  llm_wiki: "KN",
+}
+
 export interface AuthPayload {
   token?: string
   expiresAt: string
@@ -30,6 +35,18 @@ export interface AuthPayload {
   }
 }
 
+export interface UserApiKey {
+  id: string
+  name: string
+  keyHint: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface UserApiKeyCreated extends UserApiKey {
+  key: string
+}
+
 export interface FileTreeNode {
   name: string
   path: string
@@ -37,6 +54,18 @@ export interface FileTreeNode {
   size: number
   updatedAt: string
   children?: FileTreeNode[]
+}
+
+/** 目录树排序：文件夹在前，同类型按名称（与桌面端、Sources 视图一致）。 */
+export function sortFileTreeNodes(nodes: FileTreeNode[]): FileTreeNode[] {
+  return [...nodes]
+    .sort((a, b) => {
+      if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1
+      return a.name.localeCompare(b.name)
+    })
+    .map((node) =>
+      node.children ? { ...node, children: sortFileTreeNodes(node.children) } : node,
+    )
 }
 
 export interface SourceDocument {
@@ -56,6 +85,37 @@ export interface SourceDocument {
   createdAt: string
   updatedAt: string
   error?: string
+}
+
+export interface SourceAdmission {
+  path: string
+  fileName: string
+  extension: string
+  kind: string
+  mode: string
+  supported: boolean
+  autoIngest: boolean
+  reason?: string
+}
+
+export interface SourceUploadAccepted {
+  accepted: true
+  source: SourceDocument
+  job?: IngestJob
+  admission: SourceAdmission
+}
+
+export interface SourceUploadSkipped {
+  accepted: false
+  relativePath: string
+  fileName: string
+  admission: SourceAdmission
+  reason: string
+}
+
+export interface SourceUploadResponse {
+  created: SourceUploadAccepted[]
+  skipped: SourceUploadSkipped[]
 }
 
 export type ModelProvider = "openai" | "qwen" | "deepseek" | "kimi" | "claudecode" | "ollama" | "custom"
@@ -188,15 +248,19 @@ export interface GraphResponse {
   }>
 }
 
+export type ReviewKind = "llm-review" | "lint" | "graph-insight" | "deep-research"
+export type ReviewStatus = "open" | "resolved" | "dismissed"
+
 export interface ReviewItem {
   id: string
-  kind: string
+  kind: ReviewKind
   title: string
   description: string
   action?: string
   query?: string
-  status: string
+  status: ReviewStatus
   createdAt: string
+  updatedAt: string
 }
 
 export interface Capabilities {

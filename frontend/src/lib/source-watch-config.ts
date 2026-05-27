@@ -1,31 +1,14 @@
 import type { SourceWatchConfig } from "@/stores/wiki-store"
 import { normalizePath } from "@/lib/path-utils"
 import sourceWatchDefaults from "@/lib/source-watch-defaults.json"
+import {
+  classifySourcePath,
+  getSourceExtension,
+  SOURCE_WATCH_FILE_TYPE_GROUPS,
+} from "@/lib/source-formats"
 
 export const DEFAULT_SOURCE_WATCH_CONFIG: SourceWatchConfig = sourceWatchDefaults
-
-export const SOURCE_WATCH_FILE_TYPE_GROUPS = [
-  {
-    id: "documents",
-    extensions: ["md", "mdx", "txt", "pdf", "docx", "odt", "rtf"],
-  },
-  {
-    id: "presentations",
-    extensions: ["pptx", "odp"],
-  },
-  {
-    id: "spreadsheets",
-    extensions: ["xls", "xlsx", "ods", "csv"],
-  },
-  {
-    id: "web",
-    extensions: ["html", "htm"],
-  },
-  {
-    id: "data",
-    extensions: ["json", "yaml", "yml", "xml"],
-  },
-]
+export { SOURCE_WATCH_FILE_TYPE_GROUPS }
 
 function normalizeExtensions(values: readonly string[] | undefined): string[] {
   return [...new Set((values ?? [])
@@ -50,9 +33,7 @@ export function normalizeSourceWatchConfig(config?: Partial<SourceWatchConfig> |
 }
 
 export function getSourceWatchExtension(path: string): string {
-  const name = normalizePath(path).split("/").pop() ?? ""
-  if (!name || !name.includes(".")) return ""
-  return name.split(".").pop()?.toLowerCase() ?? ""
+  return getSourceExtension(path)
 }
 
 function wildcardToRegExp(pattern: string): RegExp {
@@ -88,6 +69,8 @@ export function isPathAllowedBySourceWatch(path: string, config: SourceWatchConf
   if (cfg.excludeGlobs.some((pattern) => matchesGlob(normalized, pattern))) return false
   const name = parts[parts.length - 1] ?? ""
   if (!name || name.startsWith(".")) return false
+  const admission = classifySourcePath(normalized)
+  if (!admission.autoIngest) return false
   const ext = getSourceWatchExtension(normalized)
   if (ext && cfg.excludeExtensions.includes(ext)) return false
   if (cfg.includeExtensions.length > 0 && (!ext || !cfg.includeExtensions.includes(ext))) {

@@ -14,6 +14,7 @@
  * image and the markdown line uses that instead.
  */
 import { invoke } from "@tauri-apps/api/core"
+import { copyFile, createDirectory, readFileAsBase64 } from "@/commands/fs"
 import { getFileName, normalizePath } from "@/lib/path-utils"
 
 /** Mirrors `commands::extract_images::SavedImage` on the Rust side. */
@@ -36,10 +37,23 @@ export interface SavedImage {
  *  are XML-rendered shapes, not embedded raster). Adding them later is
  *  a one-line change here. */
 const SUPPORTED_PDF_EXTS = ["pdf"] as const
-const SUPPORTED_OFFICE_EXTS = ["pptx", "docx", "ppt", "doc"] as const
-// Note: ppt / doc (legacy binary formats) won't actually work — they
-// aren't ZIP. Listed for completeness; Rust side will return Err which
-// the caller treats as "no images" gracefully.
+const SUPPORTED_OFFICE_EXTS = ["pptx", "docx"] as const
+// Legacy .ppt/.doc text extraction goes through a temporary
+// LibreOffice conversion, but image extraction remains ZIP-based and
+// only runs on native OOXML containers.
+const STANDALONE_IMAGE_EXTS = [
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+  "bmp",
+  "tiff",
+  "tif",
+  "avif",
+  "heic",
+  "heif",
+] as const
 
 /**
  * Extract every embedded image from `sourcePath` and save them to
@@ -67,11 +81,40 @@ export async function extractAndSaveSourceImages(
 
   const isPdf = (SUPPORTED_PDF_EXTS as readonly string[]).includes(ext)
   const isOffice = (SUPPORTED_OFFICE_EXTS as readonly string[]).includes(ext)
-  if (!isPdf && !isOffice) return []
+  const isStandaloneImage = (STANDALONE_IMAGE_EXTS as readonly string[]).includes(ext)
+  if (!isPdf && !isOffice && !isStandaloneImage) return []
 
   const slug = slugOverride ?? fileName.replace(/\.[^.]+$/, "")
   const destDir = `${pp}/wiki/media/${slug}`
   const relTo = `${pp}/wiki`
+
+  if (isStandaloneImage) {
+    try {
+      await createDirectory(destDir)
+      const relPath = `media/${slug}/img-1.${ext}`
+      const absPath = `${pp}/wiki/${relPath}`
+      await copyFile(sp, absPath)
+      const bytes = await readFileAsBase64(absPath)
+      return [
+        {
+          index: 1,
+          mimeType: bytes.mimeType,
+          page: null,
+          width: 0,
+          height: 0,
+          relPath,
+          absPath,
+          sha256: await sha256OfBase64(bytes.base64),
+        },
+      ]
+    } catch (err) {
+      console.warn(
+        `[ingest:images] standalone image import failed for "${fileName}":`,
+        err instanceof Error ? err.message : err,
+      )
+      return []
+    }
+  }
 
   try {
     const images = await invoke<unknown[]>(
@@ -102,6 +145,31 @@ export async function extractAndSaveSourceImages(
     )
     return []
   }
+}
+
+async function sha256OfBase64(b64: string): Promise<string> {
+  const binary = atob(b64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  const digest = await crypto.subtle.digest("SHA-256", bytes)
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("")
+}
+
+export function buildVisualEvidenceMarkdown(
+  images: Array<Pick<SavedImage, "page" | "absPath" | "relPath">>,
+  absolute = false,
+): string {
+  if (images.length === 0) return ""
+  const lines = ["", "", "## Visual Evidence", ""]
+  for (const img of images) {
+    const location = img.page == null ? "Document image" : `Page ${img.page}`
+    const url = absolute ? img.absPath : img.relPath
+    lines.push(`### ${location}`, "")
+    lines.push(`![](${url})`, "")
+  }
+  return lines.join("\n")
 }
 
 /**

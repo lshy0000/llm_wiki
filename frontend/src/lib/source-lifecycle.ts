@@ -1,8 +1,8 @@
 import {
-  copyDirectory,
   copyFile,
   deleteFile,
   fileExists,
+  getFileSize,
   listDirectory,
   preprocessFile,
   readFile,
@@ -12,7 +12,15 @@ import type { WikiProject, FileNode } from "@/types/wiki"
 import type { LlmConfig } from "@/stores/wiki-store"
 import { enqueueBatch } from "@/lib/ingest-queue"
 import { hasUsableLlm } from "@/lib/has-usable-llm"
-import { getFileName, getFileStem, normalizePath } from "@/lib/path-utils"
+import { getFileName, getFileStem, getRelativePath, normalizePath } from "@/lib/path-utils"
+import {
+  AUTO_INGEST_SOURCE_EXTENSIONS,
+  classifyExtensionlessTextSource,
+  classifySourcePath,
+  isAutoIngestSourcePath,
+  shouldPreprocessSourcePath,
+  type SourceAdmission,
+} from "@/lib/source-formats"
 import {
   sourceIdentityForPath,
   sourceReferenceIdentity,
@@ -33,27 +41,27 @@ import {
 } from "@/lib/wiki-cleanup"
 import { collectAllFilesIncludingDot } from "@/lib/sources-tree-delete"
 
-export const INGESTABLE_SOURCE_EXTENSIONS = new Set([
-  "md",
-  "mdx",
-  "txt",
-  "pdf",
-  "docx",
-  "pptx",
-  "xlsx",
-  "odt",
-  "odp",
-  "ods",
-  "xls",
-  "csv",
-  "json",
-  "html",
-  "htm",
-  "rtf",
-  "xml",
-  "yaml",
-  "yml",
-])
+export const INGESTABLE_SOURCE_EXTENSIONS = new Set(AUTO_INGEST_SOURCE_EXTENSIONS)
+
+const EXTENSIONLESS_TEXT_SNIFF_MAX_BYTES = 2 * 1024 * 1024
+const FOLDER_MANIFEST_FILE = "__folder_structure.md"
+
+interface SourceImportCandidate {
+  sourcePath: string
+  relativePath?: string
+  admission: SourceAdmission
+}
+
+interface SkippedSourceImport {
+  sourcePath: string
+  relativePath?: string
+  reason: string
+}
+
+interface SourceImportPlan {
+  accepted: SourceImportCandidate[]
+  skipped: SkippedSourceImport[]
+}
 
 export interface DeleteSourceResult {
   deletedWikiPaths: string[]
@@ -71,12 +79,7 @@ export interface DeleteSourcesResult {
 }
 
 export function isIngestableSourcePath(path: string): boolean {
-  const normalized = normalizePath(path)
-  if (normalized.split("/").includes(".cache")) return false
-  const fileName = normalized.split("/").pop() ?? ""
-  if (!fileName || fileName.startsWith(".")) return false
-  const ext = fileName.includes(".") ? fileName.split(".").pop()?.toLowerCase() : ""
-  return ext ? INGESTABLE_SOURCE_EXTENSIONS.has(ext) : false
+  return isAutoIngestSourcePath(path)
 }
 
 export function folderContextForSourcePath(sourcePath: string, sourcesRoot = "raw/sources"): string {
@@ -93,15 +96,209 @@ export function folderContextForSourcePath(sourcePath: string, sourcesRoot = "ra
   return parts.join(" > ")
 }
 
+export async function planSourceFileImport(sourcePaths: string[]): Promise<SourceImportPlan> {
+  const accepted: SourceImportCandidate[] = []
+  const skipped: SkippedSourceImport[] = []
+
+  for (const sourcePath of sourcePaths) {
+    const admission = await admitSourceForImport(sourcePath)
+    if (admission.supported) {
+      accepted.push({ sourcePath: normalizePath(sourcePath), admission })
+    } else {
+      skipped.push({
+        sourcePath: normalizePath(sourcePath),
+        reason: admission.reason ?? "unsupported source",
+      })
+    }
+  }
+
+  return { accepted, skipped }
+}
+
+export async function planSourceFolderImport(selectedFolder: string): Promise<SourceImportPlan> {
+  const root = normalizePath(selectedFolder)
+  const tree = await listDirectory(root)
+  const accepted: SourceImportCandidate[] = []
+  const skipped: SkippedSourceImport[] = []
+
+  for (const file of collectFileNodes(tree)) {
+    const sourcePath = normalizePath(file.path)
+    const relativePath = getRelativePath(sourcePath, root)
+    const admission = await admitSourceForImport(sourcePath)
+    if (admission.supported) {
+      accepted.push({ sourcePath, relativePath, admission })
+    } else {
+      skipped.push({
+        sourcePath,
+        relativePath,
+        reason: admission.reason ?? "unsupported source",
+      })
+    }
+  }
+
+  return { accepted, skipped }
+}
+
+async function admitSourceForImport(sourcePath: string): Promise<SourceAdmission> {
+  const admission = classifySourcePath(sourcePath)
+  if (admission.supported) return admission
+  if (admission.reason !== "missing extension") return admission
+  if (await canReadExtensionlessText(sourcePath)) {
+    return classifyExtensionlessTextSource(sourcePath)
+  }
+  return admission
+}
+
+async function canReadExtensionlessText(sourcePath: string): Promise<boolean> {
+  try {
+    const size = await getFileSize(sourcePath)
+    if (size > EXTENSIONLESS_TEXT_SNIFF_MAX_BYTES) return false
+    const content = await readFile(sourcePath)
+    return !content.includes("\u0000")
+  } catch {
+    return false
+  }
+}
+
+function collectFileNodes(nodes: readonly FileNode[]): FileNode[] {
+  const out: FileNode[] = []
+  function walk(items: readonly FileNode[]): void {
+    for (const item of items) {
+      if (item.is_dir) {
+        if (item.children) walk(item.children)
+      } else {
+        out.push(item)
+      }
+    }
+  }
+  walk(nodes)
+  return out
+}
+
+function shouldPreprocessAdmission(admission: SourceAdmission, path: string): boolean {
+  return admission.mode === "parse-structured" || shouldPreprocessSourcePath(path)
+}
+
+function buildFolderManifest(folderName: string, plan: SourceImportPlan): string {
+  const accepted = [...plan.accepted].sort((a, b) =>
+    (a.relativePath ?? a.sourcePath).localeCompare(b.relativePath ?? b.sourcePath),
+  )
+  const skipped = [...plan.skipped].sort((a, b) =>
+    (a.relativePath ?? a.sourcePath).localeCompare(b.relativePath ?? b.sourcePath),
+  )
+
+  const acceptedLines = accepted.length > 0
+    ? accepted.map((item) => {
+        const rel = item.relativePath ?? getFileName(item.sourcePath)
+        const mode = item.admission.mode === "store-only" ? "stored only" : item.admission.mode
+        return `- ${rel} — ${item.admission.kind}, ${mode}`
+      })
+    : ["- (none)"]
+
+  const skippedLines = skipped.length > 0
+    ? skipped.map((item) => {
+        const rel = item.relativePath ?? getFileName(item.sourcePath)
+        return `- ${rel} — skipped: ${item.reason}`
+      })
+    : ["- (none)"]
+
+  return [
+    "---",
+    "type: source",
+    `title: "Folder Structure: ${folderName.replace(/"/g, "'")}"`,
+    `sources: ["${FOLDER_MANIFEST_FILE}"]`,
+    "tags: [folder-import]",
+    "---",
+    "",
+    `# Folder Structure: ${folderName}`,
+    "",
+    "This source was generated during folder import. It records which files were accepted and which files were skipped before wiki ingestion.",
+    "",
+    "## Accepted Files",
+    "",
+    ...acceptedLines,
+    "",
+    "## Skipped Files",
+    "",
+    ...skippedLines,
+    "",
+    "## Accepted Tree",
+    "",
+    "```text",
+    ...renderRelativeTree(
+      folderName,
+      accepted.map((item) => item.relativePath ?? getFileName(item.sourcePath)),
+    ),
+    "```",
+    "",
+  ].join("\n")
+}
+
+function renderRelativeTree(rootName: string, relativePaths: string[]): string[] {
+  if (relativePaths.length === 0) return [rootName, "  (none)"]
+
+  interface TreeNode {
+    terminal: boolean
+    children: Map<string, TreeNode>
+  }
+
+  const root: TreeNode = { terminal: false, children: new Map() }
+  for (const rel of relativePaths) {
+    const parts = normalizePath(rel).split("/").filter(Boolean)
+    let node = root
+    for (const [idx, part] of parts.entries()) {
+      let child = node.children.get(part)
+      if (!child) {
+        child = { terminal: false, children: new Map() }
+        node.children.set(part, child)
+      }
+      if (idx === parts.length - 1) child.terminal = true
+      node = child
+    }
+  }
+
+  const lines = [rootName]
+  const walk = (node: TreeNode, depth: number) => {
+    const entries = [...node.children.entries()].sort(([aName, aNode], [bName, bNode]) => {
+      const aIsDir = aNode.children.size > 0
+      const bIsDir = bNode.children.size > 0
+      if (aIsDir !== bIsDir) return aIsDir ? -1 : 1
+      return aName.localeCompare(bName)
+    })
+    for (const [name, child] of entries) {
+      const suffix = child.children.size > 0 && !child.terminal ? "/" : ""
+      lines.push(`${"  ".repeat(depth)}${name}${suffix}`)
+      if (child.children.size > 0) walk(child, depth + 1)
+    }
+  }
+  walk(root, 1)
+  return lines
+}
+
+function logSkippedImports(skipped: readonly SkippedSourceImport[]): void {
+  if (skipped.length === 0) return
+  console.info(
+    `[source-lifecycle] skipped ${skipped.length} unsupported source file(s):`,
+    skipped.map((item) => `${item.relativePath ?? item.sourcePath} (${item.reason})`),
+  )
+}
+
 export async function enqueueSourceIngest(
   project: WikiProject,
   sourcePaths: string[],
   llmConfig: LlmConfig,
-  options: { sourceRoot?: string; rootContext?: string } = {},
+  options: {
+    sourceRoot?: string
+    rootContext?: string
+    admittedSources?: Map<string, SourceAdmission>
+  } = {},
 ): Promise<string[]> {
   if (!hasUsableLlm(llmConfig)) return []
   const files = sourcePaths
-    .filter(isIngestableSourcePath)
+    .filter((sourcePath) => {
+      const admitted = options.admittedSources?.get(normalizePath(sourcePath))
+      return admitted ? admitted.autoIngest : isIngestableSourcePath(sourcePath)
+    })
     .map((sourcePath) => ({
       sourcePath,
       folderContext: withRootContext(
@@ -120,20 +317,26 @@ export async function importSourceFiles(
 ): Promise<string[]> {
   const pp = normalizePath(project.path)
   const importedPaths: string[] = []
+  const admittedSources = new Map<string, SourceAdmission>()
+  const plan = await planSourceFileImport(sourcePaths)
 
-  for (const sourcePath of sourcePaths) {
-    const originalName = getFileName(sourcePath) || "unknown"
+  for (const item of plan.accepted) {
+    const originalName = getFileName(item.sourcePath) || "unknown"
     const destPath = await getUniqueDestPath(`${pp}/raw/sources`, originalName)
     try {
-      await copyFile(sourcePath, destPath)
+      await copyFile(item.sourcePath, destPath)
       importedPaths.push(destPath)
-      preprocessFile(destPath).catch(() => {})
+      admittedSources.set(normalizePath(destPath), item.admission)
+      if (shouldPreprocessAdmission(item.admission, destPath)) {
+        preprocessFile(destPath).catch(() => {})
+      }
     } catch (err) {
       console.error(`Failed to import ${originalName}:`, err)
     }
   }
 
-  await enqueueSourceIngest(project, importedPaths, llmConfig)
+  logSkippedImports(plan.skipped)
+  await enqueueSourceIngest(project, importedPaths, llmConfig, { admittedSources })
 
   return importedPaths
 }
@@ -146,16 +349,35 @@ export async function importSourceFolder(
   const pp = normalizePath(project.path)
   const folderName = getFileName(selectedFolder) || "imported"
   const destDir = `${pp}/raw/sources/${folderName}`
-  const copiedFiles = await copyDirectory(selectedFolder, destDir)
+  const plan = await planSourceFolderImport(selectedFolder)
+  const copiedFiles: string[] = []
+  const admittedSources = new Map<string, SourceAdmission>()
 
-  for (const filePath of copiedFiles) {
-    preprocessFile(filePath).catch(() => {})
+  for (const item of plan.accepted) {
+    const rel = item.relativePath ?? getFileName(item.sourcePath)
+    const destPath = `${destDir}/${rel}`
+    try {
+      await copyFile(item.sourcePath, destPath)
+      copiedFiles.push(destPath)
+      admittedSources.set(normalizePath(destPath), item.admission)
+      if (shouldPreprocessAdmission(item.admission, destPath)) {
+        preprocessFile(destPath).catch(() => {})
+      }
+    } catch (err) {
+      console.error(`Failed to import ${item.sourcePath}:`, err)
+    }
   }
 
+  const manifestPath = `${destDir}/${FOLDER_MANIFEST_FILE}`
+  await writeFile(manifestPath, buildFolderManifest(folderName, plan))
+  copiedFiles.push(manifestPath)
+
+  logSkippedImports(plan.skipped)
   if (hasUsableLlm(llmConfig)) {
     await enqueueSourceIngest(project, copiedFiles, llmConfig, {
       sourceRoot: destDir,
       rootContext: folderName,
+      admittedSources,
     })
   }
 

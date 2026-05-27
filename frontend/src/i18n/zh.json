@@ -66,7 +66,7 @@
     "browse": "选择父目录",
     "aiOutputLanguage": "AI 输出语言",
     "aiOutputLanguageRequired": "*",
-    "aiOutputLanguageHint": "所有 AI 生成的内容（Wiki 页面、聊天回复、Research 结果）都将使用此语言。您可以在设置 → 输出 中稍后更改。",
+    "aiOutputLanguageHint": "默认自动跟随输入或源文档语言；无法判断时优先使用中文。您可以在设置 → 输出 中稍后更改。",
     "pickLanguage": "选择语言..."
   },
   "templates": {

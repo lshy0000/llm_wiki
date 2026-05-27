@@ -4,9 +4,8 @@
  *
  * Currently consumed by:
  *   - Settings → Output: post-create change of the preference
- *   - Create-Project dialog: required choice at project creation
- *     time so a fresh project never starts in the implicit
- *     "auto-detect from whatever text we see first" mode
+ *   - Create-Project dialog: defaults to auto so a fresh project follows
+ *     the source document language; empty input falls back to Chinese
  *
  * `value` strings are the exact tokens the rest of the codebase
  * compares against (`OutputLanguage` type in stores/wiki-store.ts);
@@ -15,7 +14,7 @@
  * the language.
  */
 export const OUTPUT_LANGUAGE_OPTIONS = [
-  { value: "auto", label: "Auto (detect from input/source)" },
+  { value: "auto", label: "自动（跟随输入/源文档） / Auto" },
   { value: "English", label: "English" },
   { value: "Chinese", label: "简体中文 (Simplified Chinese)" },
   { value: "Traditional Chinese", label: "繁體中文 (Traditional Chinese)" },

@@ -2,6 +2,7 @@ import type { FileTreeNode } from "./types.js"
 import type { KnowledgeRepository } from "./repository.js"
 import type { SourceService } from "./source-service.js"
 import type { StorageProvider } from "./storage.js"
+import { classifySourcePath } from "./source-formats.js"
 
 export class SourceWatchService {
   private timer: NodeJS.Timeout | undefined
@@ -47,9 +48,12 @@ export class SourceWatchService {
     let queued = false
     for (const file of files) {
       if (file.isDirectory || known.has(file.path)) continue
+      const relativePath = file.path.replace(/^raw\/?/, "")
+      const pathAdmission = classifySourcePath(relativePath)
+      if (!pathAdmission.supported && pathAdmission.reason !== "missing extension") continue
       const bytes = await this.storage.readObject(kbId, file.path)
-      await this.source.registerExisting({ kbId, storageKey: file.path, bytes })
-      queued = true
+      const saved = await this.source.registerExisting({ kbId, storageKey: file.path, bytes })
+      if (saved.accepted && saved.job) queued = true
     }
     if (queued) await this.onQueued()
   }

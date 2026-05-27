@@ -1,10 +1,12 @@
-import type { ImageAsset, IngestJob, PageChunk, ReviewItem, WikiLink, WikiPage } from "./types.js"
+import type { EvidenceBlock, ImageAsset, IngestJob, PageChunk, ParsedDocument, ReviewItem, WikiLink, WikiPage } from "./types.js"
 import { DocumentParser } from "./document-parser.js"
+import { makeEvidenceBlock, renderEvidenceMarkdown } from "./evidence.js"
 import { LlmGateway } from "./llm-gateway.js"
 import type { KnowledgeRepository } from "./repository.js"
 import type { StorageProvider } from "./storage.js"
 import {
   buildFallbackWikiPage,
+  canonicalWikiPagePath,
   chunkText,
   extractWikiLinks,
   id,
@@ -15,7 +17,6 @@ import {
   parseFileBlocks,
   parseFrontmatter,
   pathJoinKey,
-  safeWikiPath,
   sha256,
   tokenize,
 } from "./wiki-utils.js"
@@ -102,7 +103,7 @@ export class IngestService {
 
       await update({ progress: 20, stage: "Captioning multimodal images" })
       const imageAssets: ImageAsset[] = []
-      let imageSection = ""
+      const evidenceBlocks: EvidenceBlock[] = [...parsed.evidence]
       for (const extracted of parsed.images) {
         this.ensureNotCancelled(job.id)
         const imageId = id("img")
@@ -129,15 +130,24 @@ export class IngestService {
         }
         await this.repo.saveImage(asset)
         imageAssets.push(asset)
-        imageSection += `\n\n### Image: ${asset.fileName}\n\n${caption}\n\n${imageMarkdown(asset)}\n`
+        const imageMarkdownText = imageMarkdown(asset)
+        evidenceBlocks.push(makeEvidenceBlock({
+          kind: "image",
+          sourcePath: source.relativePath,
+          locator: this.evidenceLocatorForImage(extracted),
+          mediaKey,
+          text: [`Caption: ${caption}`, imageMarkdownText].join("\n\n"),
+          extractor: "vision-caption",
+        }))
       }
 
+      const evidenceMarkdown = renderEvidenceMarkdown(evidenceBlocks)
+      const fallbackSourceText = parsed.text || evidenceBlocks.map((block) => block.text).join("\n\n")
       const sourceContext = [
         `Source id: ${source.id}`,
         `Source file: ${source.relativePath}`,
         source.folderContext ? `Folder context: ${source.folderContext}` : "",
-        parsed.text,
-        imageSection ? `\n## Extracted Images\n${imageSection}` : "",
+        evidenceMarkdown,
       ].filter(Boolean).join("\n\n")
 
       await update({ progress: 36, stage: "Step 1: LLM analysis" })
@@ -148,11 +158,11 @@ export class IngestService {
           {
             role: "system",
             content:
-              "You are the analysis stage of an llm_wiki ingest pipeline. Identify source claims, entities, concepts, contradictions, and likely wiki page updates. Do not write final pages yet.",
+              "You are the analysis stage of an llm_wiki ingest pipeline. Use the provided Evidence blocks, their IDs, source paths, and locators to identify source claims, entities, concepts, contradictions, and likely wiki page updates. Do not write final pages yet.",
           },
           { role: "user", content: sourceContext.slice(0, 40_000) },
         ],
-        this.fallbackAnalysis(source.relativePath, parsed.text, imageAssets),
+        this.fallbackAnalysis(source.relativePath, fallbackSourceText, imageAssets),
       )
 
       await update({ progress: 58, stage: "Step 2: wiki page generation", analysis })
@@ -163,7 +173,7 @@ export class IngestService {
           {
             role: "system",
             content:
-              "Generate llm_wiki FILE and REVIEW blocks. FILE blocks must be fenced as ```FILE wiki/...md. Every page must include YAML frontmatter with type, title, sources, source_path, and folder_context. Use [[wikilink]] relations and cite the source id.",
+              "Generate llm_wiki FILE and REVIEW blocks. FILE blocks must be fenced as ```FILE wiki/...md. Put pages in canonical directories by type: entity -> wiki/entities, concept -> wiki/concepts, source -> wiki/sources, query -> wiki/queries, comparison -> wiki/comparisons, synthesis -> wiki/synthesis. Use only those page types unless updating a root system page. Every page must include YAML frontmatter with type, title, sources, source_path, and folder_context. Ground factual statements in the provided Evidence IDs and source locators. Use [[wikilink]] relations and cite the source id.",
           },
           {
             role: "user",
@@ -173,7 +183,7 @@ export class IngestService {
             ].join("\n\n---\n\n"),
           },
         ],
-        this.fallbackGeneration(source.relativePath, parsed.text, source.id, source.folderContext, imageAssets),
+        this.fallbackGeneration(source.relativePath, fallbackSourceText, source.id, source.folderContext, imageAssets),
         3200,
       )
 
@@ -181,23 +191,28 @@ export class IngestService {
       const blocks = parseFileBlocks(generation)
       const fileBlocks = blocks.filter((block) => block.kind === "file" && block.path)
       if (fileBlocks.length === 0) {
-        const fallback = buildFallbackWikiPage(source.relativePath, parsed.text + imageSection, source.id, source.folderContext)
+        const fallback = buildFallbackWikiPage(source.relativePath, `${fallbackSourceText}\n\n${evidenceMarkdown}`, source.id, source.folderContext)
         fileBlocks.push({ kind: "file", path: fallback.path, content: fallback.content })
       }
 
       const pages = await this.repo.listPages(job.kbId)
       const pageIds = new Set(pages.map((page) => page.id))
+      const pageById = new Map(pages.map((page) => [page.id, page]))
       const writtenPageIds: string[] = []
       for (const block of fileBlocks) {
         this.ensureNotCancelled(job.id)
-        const pagePath = safeWikiPath(block.path ?? "")
         let content = block.content
+        const pagePath = canonicalWikiPagePath(block.path ?? "", content)
         if (imageAssets.length > 0 && !content.includes("wiki/media/")) {
           content += `\n\n## Source Images\n\n${imageAssets.map(imageMarkdown).join("\n\n")}\n`
         }
         await this.storage.writeObject(job.kbId, pagePath, content)
         const page = this.buildPage(job.kbId, pagePath, content, source.id, imageAssets)
         page.companyId = source.companyId
+        const previousPage = pageById.get(page.id)
+        if (previousPage && previousPage.path !== page.path) {
+          await this.storage.deleteObject(job.kbId, previousPage.path)
+        }
         await this.repo.upsertPage(page)
         await this.repo.replacePageSources(job.kbId, page.id, [{ companyId: source.companyId, kbId: job.kbId, pageId: page.id, sourceId: source.id }])
         const links: WikiLink[] = extractWikiLinks(content).map((raw) => ({
@@ -211,6 +226,7 @@ export class IngestService {
         await this.repo.replaceChunks(job.kbId, page.id, await this.buildChunks(job.kbId, page.id, content))
         writtenPageIds.push(page.id)
         pageIds.add(page.id)
+        pageById.set(page.id, page)
       }
 
       for (const block of blocks.filter((item) => item.kind === "review")) {
@@ -297,6 +313,13 @@ export class IngestService {
       createdAt: now,
       updatedAt: now,
     }
+  }
+
+  private evidenceLocatorForImage(image: ParsedDocument["images"][number]): EvidenceBlock["locator"] | undefined {
+    if (image.sourceSlide !== undefined) return { slide: image.sourceSlide }
+    if (image.sourceSheet) return { sheet: image.sourceSheet }
+    if (image.sourcePage !== undefined) return { page: image.sourcePage }
+    return undefined
   }
 
   private async buildChunks(kbId: string, pageId: string, content: string): Promise<PageChunk[]> {

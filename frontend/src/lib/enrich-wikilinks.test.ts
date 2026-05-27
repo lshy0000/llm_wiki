@@ -89,16 +89,16 @@ describe("enrichWithWikilinks — language directive is built at call time", () 
     expect(content).toContain("MANDATORY OUTPUT LANGUAGE: Chinese")
   })
 
-  it("explicit setting beats source content detection", async () => {
+  it("treats English setting as a weak default for non-English page content", async () => {
     useWikiStore.getState().setOutputLanguage("English")
     mockReadFile.mockResolvedValue("这段中文页面内容非常长，足够通过守卫，里面讲的是注意力机制")
-    mockStreamChatReturns("This is english replacement content that is long enough to pass the guard [[link]]")
+    mockStreamChatReturns("这段中文页面内容非常长，足够通过守卫，里面讲的是[[注意力机制]]")
 
     await enrichWithWikilinks("/p", "/p/wiki/x.md", fakeLlmConfig())
 
     const content = mockStreamChat.mock.calls[0][1][0].content
-    expect(content).toContain("MANDATORY OUTPUT LANGUAGE: English")
-    expect(content).not.toContain("MANDATORY OUTPUT LANGUAGE: Chinese")
+    expect(content).toContain("MANDATORY OUTPUT LANGUAGE: Chinese")
+    expect(content).not.toContain("MANDATORY OUTPUT LANGUAGE: English")
   })
 })
 

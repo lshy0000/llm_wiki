@@ -6,6 +6,7 @@ import { useActivityStore } from "@/stores/activity-store"
 import { useChatStore } from "@/stores/chat-store"
 import { useReviewStore } from "@/stores/review-store"
 import { useWikiStore } from "@/stores/wiki-store"
+import { normalizePath } from "@/lib/path-utils"
 import { sourceSummarySlugFromIdentity } from "./source-identity"
 
 vi.mock("@/commands/fs", () => realFs)
@@ -526,7 +527,7 @@ describe("autoIngest source summary paths", () => {
     const staleSummaryPath = path.join(tmp.path, "wiki", "sources", "config.md")
     const content = await fs.readFile(canonicalSummaryPath, "utf8")
 
-    expect(writtenPaths).toEqual([canonicalSummaryPath])
+    expect(writtenPaths).toEqual([normalizePath(canonicalSummaryPath)])
     await expect(fs.access(staleSummaryPath)).rejects.toThrow()
     expect(content).toContain('sources: ["project-a/config.yaml"]')
   })

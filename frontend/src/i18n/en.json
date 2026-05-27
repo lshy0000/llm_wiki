@@ -66,7 +66,7 @@
     "browse": "Select Parent Directory",
     "aiOutputLanguage": "AI Output Language",
     "aiOutputLanguageRequired": "*",
-    "aiOutputLanguageHint": "All AI-generated content (wiki pages, chat replies, research output) will use this language. You can change it later in Settings → Output.",
+    "aiOutputLanguageHint": "By default, AI output follows the input/source language; if unsure, it prefers Chinese. You can change it later in Settings → Output.",
     "pickLanguage": "Pick a language…"
   },
   "templates": {

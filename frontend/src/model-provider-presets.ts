@@ -5,7 +5,7 @@ export type ModelProviderPreset = {
   label: string
   protocol: CompanyModel["protocol"]
   endpoint: string
-  defaultModel: string
+  suggestedModel: string
   defaultCapabilities: CompanyModel["capabilities"]
   description: string
 }
@@ -16,7 +16,7 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     label: "OpenAI",
     protocol: "openai_compatible",
     endpoint: "https://api.openai.com/v1",
-    defaultModel: "gpt-4o-mini",
+    suggestedModel: "gpt-4o-mini",
     defaultCapabilities: ["llm", "vision"],
     description: "官方 OpenAI API，适合 LLM 和视觉模型。",
   },
@@ -25,7 +25,7 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     label: "千问 DashScope",
     protocol: "openai_compatible",
     endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    defaultModel: "qwen-plus",
+    suggestedModel: "qwen-plus",
     defaultCapabilities: ["llm", "vision"],
     description: "阿里云百炼 DashScope 模式，填写 DashScope API Key 和模型名。",
   },
@@ -34,7 +34,7 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     label: "DeepSeek",
     protocol: "openai_compatible",
     endpoint: "https://api.deepseek.com",
-    defaultModel: "deepseek-v4-flash",
+    suggestedModel: "deepseek-v4-flash",
     defaultCapabilities: ["llm"],
     description: "DeepSeek 官方端点，后端对 v4 模型做专用 thinking 控制。",
   },
@@ -43,7 +43,7 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     label: "Kimi / Moonshot",
     protocol: "openai_compatible",
     endpoint: "https://api.moonshot.cn/v1",
-    defaultModel: "kimi-k2.6",
+    suggestedModel: "kimi-k2.6",
     defaultCapabilities: ["llm"],
     description: "月之暗面 Moonshot 官方端点。",
   },
@@ -52,7 +52,7 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     label: "Claude / Anthropic",
     protocol: "anthropic_messages",
     endpoint: "https://api.anthropic.com",
-    defaultModel: "claude-sonnet-4-5-20250929",
+    suggestedModel: "claude-sonnet-4-5-20250929",
     defaultCapabilities: ["llm", "vision"],
     description: "Anthropic Messages 协议，填写 Anthropic API Key 和 Claude 模型名。",
   },
@@ -61,7 +61,7 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     label: "Ollama",
     protocol: "openai_compatible",
     endpoint: "http://localhost:11434/v1",
-    defaultModel: "llama3.1",
+    suggestedModel: "llama3.1",
     defaultCapabilities: ["llm"],
     description: "本地 Ollama /v1 端点，通常不需要 API Key。",
   },
@@ -70,7 +70,7 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     label: "自定义",
     protocol: "openai_compatible",
     endpoint: "",
-    defaultModel: "",
+    suggestedModel: "",
     defaultCapabilities: ["llm"],
     description: "自定义服务需要填写 Base URL，并选择 API 模式。",
   },

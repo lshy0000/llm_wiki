@@ -62,7 +62,7 @@ describe("optimizeResearchTopic — language directive", () => {
     expect(prompt).toContain("MANDATORY OUTPUT LANGUAGE: Chinese")
   })
 
-  it("user setting beats the detected source language", async () => {
+  it("treats English setting as a weak default for non-English review text", async () => {
     useWikiStore.getState().setOutputLanguage("English")
     await optimizeResearchTopic(
       fakeLlmConfig(),
@@ -74,8 +74,8 @@ describe("optimizeResearchTopic — language directive", () => {
     )
 
     const prompt = mockStreamChat.mock.calls[0][1][0].content
-    expect(prompt).toContain("MANDATORY OUTPUT LANGUAGE: English")
-    expect(prompt).not.toContain("MANDATORY OUTPUT LANGUAGE: Chinese")
+    expect(prompt).toContain("MANDATORY OUTPUT LANGUAGE: Chinese")
+    expect(prompt).not.toContain("MANDATORY OUTPUT LANGUAGE: English")
   })
 
   it("TOPIC output-format hint tells the LLM to use the mandatory language", async () => {

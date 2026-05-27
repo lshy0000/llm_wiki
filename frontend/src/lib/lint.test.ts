@@ -100,7 +100,7 @@ describe("runSemanticLint — language directive", () => {
     expect(prompt).toContain("MANDATORY OUTPUT LANGUAGE: Chinese")
   })
 
-  it("explicit setting wins over source language", async () => {
+  it("treats English setting as a weak default for non-English wiki content", async () => {
     const pages = [makeFileNode("x.md", "これは日本語の内容です")]
     mockListDirectory.mockResolvedValue(pages.map((p) => p.node))
     mockReadFile.mockResolvedValue(pages[0].content)
@@ -113,8 +113,8 @@ describe("runSemanticLint — language directive", () => {
     await runSemanticLint("/project", fakeLlmConfig())
 
     const prompt = mockStreamChat.mock.calls[0][1][0].content
-    expect(prompt).toContain("MANDATORY OUTPUT LANGUAGE: English")
-    expect(prompt).not.toContain("MANDATORY OUTPUT LANGUAGE: Japanese")
+    expect(prompt).toContain("MANDATORY OUTPUT LANGUAGE: Japanese")
+    expect(prompt).not.toContain("MANDATORY OUTPUT LANGUAGE: English")
   })
 })
 

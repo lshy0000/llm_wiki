@@ -1,7 +1,7 @@
 import fs from "node:fs/promises"
 import path from "node:path"
 import type { FileTreeNode } from "./types.js"
-import { normalizeStorageKey, nowIso } from "./wiki-utils.js"
+import { compareFileTreeEntries, normalizeStorageKey, nowIso } from "./wiki-utils.js"
 
 export interface StorageProvider {
   writeObject(kbId: string, key: string, content: Buffer | string): Promise<void>
@@ -78,7 +78,12 @@ export class LocalStorageProvider implements StorageProvider {
   private async readDirRecursive(kbId: string, absoluteDir: string, prefix: string): Promise<FileTreeNode[]> {
     const entries = await fs.readdir(absoluteDir, { withFileTypes: true })
     const nodes: FileTreeNode[] = []
-    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    for (const entry of entries.sort((a, b) =>
+      compareFileTreeEntries(
+        { name: a.name, isDirectory: a.isDirectory() },
+        { name: b.name, isDirectory: b.isDirectory() },
+      ),
+    )) {
       const key = normalizeStorageKey(`${prefix}/${entry.name}`)
       const absolute = this.resolve(kbId, key)
       const stat = await fs.stat(absolute)

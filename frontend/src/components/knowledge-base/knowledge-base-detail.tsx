@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm"
 import {
   ArrowLeft,
   Brain,
+  CheckCircle2,
   ChevronUp,
   ClipboardList,
   Download,
@@ -12,31 +13,38 @@ import {
   FileText,
   Folder,
   LibraryBig,
+  Loader2,
   MessageSquare,
   Network,
   RefreshCw,
+  RotateCcw,
   Settings,
   Trash2,
   Upload,
   X,
 } from "lucide-react"
 import { API_BASE, api, getAuthToken } from "@/web/api"
-import type {
-  Capabilities,
-  CompanyModel,
-  FileTreeNode,
-  GraphResponse,
-  IngestJob,
-  KnowledgeBase,
-  ReviewItem,
-  SearchResult,
-  SourceDocument,
-  WikiPage,
-  WikiTreeGroup,
+import {
+  KB_TYPE_LABEL,
+  sortFileTreeNodes,
+  type Capabilities,
+  type CompanyModel,
+  type FileTreeNode,
+  type GraphResponse,
+  type IngestJob,
+  type KnowledgeBase,
+  type ReviewItem,
+  type SearchResult,
+  type SourceDocument,
+  type WikiPage,
+  type WikiTreeGroup,
 } from "@/web/types"
 import { embeddingModelLabel } from "@/model-provider-presets"
 
 type DetailTab = "sources" | "structure" | "graph" | "recall" | "reviews"
+const SOURCES_PANEL_INITIAL_REFRESH_DELAY_MS = 2_000
+const SOURCES_PANEL_MAX_REFRESH_DELAY_MS = 30_000
+
 type FileSelection = {
   root: "raw" | "wiki"
   path: string
@@ -83,7 +91,7 @@ export function KnowledgeBaseDetail({
     return () => { alive = false }
   }, [])
 
-  const defaultEmbedding = embeddingModels.find((model) => model.isDefaultEmbedding) ?? embeddingModels[0]
+  const defaultEmbedding = embeddingModels.find((model) => model.isDefaultEmbedding)
   // 展示层可以把“未显式绑定”显示成当前默认模型，便于管理员理解实际会用哪个模型；
   // 但只有用户在下拉框保存后，kb.embeddingModelId 才会变成显式绑定，后端摄取和检索都以这个字段为准。
   const activeEmbedding = embeddingModels.find((model) => model.id === kb.embeddingModelId) ?? defaultEmbedding
@@ -140,7 +148,7 @@ export function KnowledgeBaseDetail({
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <h1 className="truncate text-lg font-semibold">{kb.name}</h1>
-              <span className="rounded bg-purple-50 px-2 py-1 text-xs text-purple-700">llm_wiki</span>
+              <span className="rounded bg-purple-50 px-2 py-1 text-xs text-purple-700">{KB_TYPE_LABEL[kb.type]}</span>
             </div>
             <p className="mt-0.5 truncate text-xs text-neutral-500">/database/{kb.id} · {kb.visibility === "company" ? "全公司可见" : "仅创建者可见"}</p>
           </div>
@@ -315,16 +323,33 @@ function SourcesPanel({ kbId }: { kbId: string }) {
       api.listSources(kbId),
       api.listJobs(kbId),
     ])
-    setRawTree(raw)
-    setWikiTree(wiki)
+    setRawTree(sortFileTreeNodes(raw))
+    setWikiTree(sortFileTreeNodes(wiki))
     setSources(sourceList)
     setJobs(jobList)
   }
 
   useEffect(() => {
+    let cancelled = false
+    let timer: number | undefined
+    let delay = SOURCES_PANEL_INITIAL_REFRESH_DELAY_MS
+
+    const scheduleNextLoad = () => {
+      timer = window.setTimeout(() => {
+        void load().finally(() => {
+          if (cancelled) return
+          delay = Math.min(delay * 2, SOURCES_PANEL_MAX_REFRESH_DELAY_MS)
+          scheduleNextLoad()
+        })
+      }, delay)
+    }
+
     void load()
-    const timer = window.setInterval(() => void load(), 2500)
-    return () => window.clearInterval(timer)
+    scheduleNextLoad()
+    return () => {
+      cancelled = true
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
   }, [kbId])
 
   const upload = async (files: FileList | null) => {
@@ -400,7 +425,7 @@ function SourcesPanel({ kbId }: { kbId: string }) {
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <h2 className="text-base font-semibold">文件目录与摄取队列</h2>
-            <p className="mt-1 text-sm text-neutral-600">raw 保留用户上传结构，wiki 按 llm_wiki 规则生成可追溯页面。</p>
+            <p className="mt-1 text-sm text-neutral-600">raw 保留用户上传结构，wiki 按 KN 规则生成可追溯页面。</p>
           </div>
           <div className="flex shrink-0 gap-2">
             <label className="inline-flex h-9 cursor-pointer items-center gap-2 rounded-md border border-neutral-200 px-3 text-sm hover:bg-neutral-50">
@@ -439,10 +464,10 @@ function SourcesPanel({ kbId }: { kbId: string }) {
 
       <section className="max-h-44 shrink-0 overflow-auto border-t border-neutral-100 bg-white">
         <div className="sticky top-0 z-10 border-b border-neutral-100 bg-white px-3 py-2">
-          <h3 className="text-sm font-semibold">队列和源文件</h3>
+          <h3 className="text-sm font-semibold">任务队列</h3>
         </div>
         <div className="divide-y divide-neutral-100">
-          {jobs.length === 0 && sources.length === 0 && <div className="p-3 text-sm text-neutral-500">暂无上传文件</div>}
+          {jobs.length === 0 && <div className="p-3 text-sm text-neutral-500">暂无任务</div>}
           {jobs.map((job) => (
             <div key={job.id} className="p-3">
               <div className="flex items-center justify-between gap-2">
@@ -466,19 +491,6 @@ function SourcesPanel({ kbId }: { kbId: string }) {
                   </button>
                 ) : null}
               </div>
-            </div>
-          ))}
-          {sources.map((source) => (
-            <div key={source.id} className="p-3 text-sm">
-              <div className="font-medium">{source.relativePath}</div>
-              <div className="mt-1 text-xs text-neutral-500">
-                {source.status} · {source.root}/{source.parentPath || "/"} · {source.uploadBatchId || "no-batch"}
-              </div>
-              {source.folderContext && (
-                <pre className="mt-2 max-h-20 overflow-auto whitespace-pre-wrap rounded bg-neutral-50 p-2 text-xs leading-5 text-neutral-600">
-                  {source.folderContext}
-                </pre>
-              )}
             </div>
           ))}
         </div>
@@ -539,8 +551,12 @@ function TreeNodeView({
         onClick={toggle}
         type="button"
       >
-        {node.isDirectory && <ChevronUp className={`h-3 w-3 text-neutral-400 transition ${open ? "" : "rotate-90"}`} />}
-        {node.isDirectory ? <Folder className="h-4 w-4 text-amber-700" /> : <FileSearch className="h-4 w-4 text-neutral-500" />}
+        {node.isDirectory ? (
+          <ChevronUp className={`h-3 w-3 shrink-0 text-neutral-400 transition ${open ? "" : "rotate-90"}`} />
+        ) : (
+          <span className="inline-block h-3 w-3 shrink-0" aria-hidden />
+        )}
+        {node.isDirectory ? <Folder className="h-4 w-4 shrink-0 text-amber-700" /> : <FileSearch className="h-4 w-4 shrink-0 text-neutral-500" />}
         <span className="truncate">{node.name}</span>
       </button>
       {open && node.children?.map((child) => <TreeNodeView key={child.path} node={child} depth={depth + 1} selectedPath={selectedPath} onOpenFile={onOpenFile} />)}
@@ -704,7 +720,7 @@ function StructurePanel({ kbId }: { kbId: string }) {
       <aside className="min-h-0 overflow-auto border-r border-neutral-100">
         <div className="sticky top-0 z-10 border-b border-neutral-100 bg-white px-4 py-3">
           <h2 className="text-base font-semibold">Wiki 规则结构</h2>
-          <p className="mt-1 text-sm text-neutral-600">按 llm_wiki page type 组织。</p>
+          <p className="mt-1 text-sm text-neutral-600">按 KN page type 组织。</p>
         </div>
         <div className="space-y-3 p-3">
           {groups.map((group) => (
@@ -905,26 +921,126 @@ function RecallPanel({ kbId }: { kbId: string }) {
   )
 }
 
+type ReviewStatusFilter = ReviewItem["status"] | "all"
+
+const REVIEW_STATUS_FILTERS: Array<{ key: ReviewStatusFilter; label: string }> = [
+  { key: "open", label: "待处理" },
+  { key: "resolved", label: "已解决" },
+  { key: "dismissed", label: "已忽略" },
+  { key: "all", label: "全部" },
+]
+
+const REVIEW_STATUS_META: Record<ReviewItem["status"], { label: string; className: string }> = {
+  open: { label: "待处理", className: "border-amber-200 bg-amber-50 text-amber-800" },
+  resolved: { label: "已解决", className: "border-teal-200 bg-teal-50 text-teal-800" },
+  dismissed: { label: "已忽略", className: "border-neutral-200 bg-neutral-100 text-neutral-600" },
+}
+
+const REVIEW_KIND_LABELS: Record<ReviewItem["kind"], string> = {
+  "llm-review": "LLM 审核",
+  lint: "Lint",
+  "graph-insight": "图谱洞察",
+  "deep-research": "深度研究",
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
 function ReviewsPanel({ kbId }: { kbId: string }) {
   const [reviews, setReviews] = useState<ReviewItem[]>([])
   const [topic, setTopic] = useState("")
+  const [statusFilter, setStatusFilter] = useState<ReviewStatusFilter>("open")
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [runningLint, setRunningLint] = useState(false)
+  const [runningResearch, setRunningResearch] = useState(false)
+  const [updatingReviewId, setUpdatingReviewId] = useState<string | null>(null)
 
-  const load = async () => setReviews(await api.reviews(kbId))
   useEffect(() => {
-    void load()
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    void api.reviews(kbId)
+      .then((items) => {
+        if (cancelled) return
+        setReviews(items)
+      })
+      .catch((err) => {
+        if (cancelled) return
+        setError(errorMessage(err))
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => { cancelled = true }
   }, [kbId])
 
+  const refreshReviews = async (showLoading = false) => {
+    if (showLoading) setLoading(true)
+    try {
+      setReviews(await api.reviews(kbId))
+      setError(null)
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      if (showLoading) setLoading(false)
+    }
+  }
+
   const runLint = async () => {
-    await api.lint(kbId)
-    await load()
+    setRunningLint(true)
+    setError(null)
+    try {
+      await api.lint(kbId)
+      await refreshReviews()
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setRunningLint(false)
+    }
   }
 
   const runResearch = async () => {
-    if (!topic.trim()) return
-    await api.research(kbId, topic)
-    setTopic("")
-    await load()
+    const researchTopic = topic.trim()
+    if (!researchTopic) return
+    setRunningResearch(true)
+    setError(null)
+    try {
+      await api.research(kbId, researchTopic)
+      setTopic("")
+      await refreshReviews()
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setRunningResearch(false)
+    }
   }
+
+  const updateReviewStatus = async (reviewId: string, status: ReviewItem["status"]) => {
+    setUpdatingReviewId(reviewId)
+    setError(null)
+    try {
+      await api.updateReviewStatus(kbId, reviewId, status)
+      await refreshReviews()
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setUpdatingReviewId(null)
+    }
+  }
+
+  const reviewCounts = useMemo(() => {
+    const counts: Record<ReviewItem["status"], number> = { open: 0, resolved: 0, dismissed: 0 }
+    for (const review of reviews) counts[review.status] += 1
+    return counts
+  }, [reviews])
+
+  const visibleReviews = useMemo(
+    () => statusFilter === "all" ? reviews : reviews.filter((review) => review.status === statusFilter),
+    [reviews, statusFilter],
+  )
+  const currentFilterLabel = REVIEW_STATUS_FILTERS.find((item) => item.key === statusFilter)?.label ?? "审核项"
 
   return (
     <section className="grid h-full min-h-0 grid-cols-[320px_minmax(0,1fr)] gap-3 p-3">
@@ -933,29 +1049,127 @@ function ReviewsPanel({ kbId }: { kbId: string }) {
         <p className="mt-2 text-sm leading-6 text-neutral-600">
           LLM 摄取、lint、图洞察和 deep research 都会进入同一个人工审核队列。
         </p>
-        <button className="mt-4 h-10 w-full border border-neutral-300 text-sm" onClick={() => void runLint()}>运行 lint</button>
+        <button
+          className="mt-4 inline-flex h-10 w-full items-center justify-center gap-2 border border-neutral-300 text-sm disabled:cursor-not-allowed disabled:opacity-60"
+          disabled={runningLint}
+          onClick={() => void runLint()}
+          type="button"
+        >
+          {runningLint ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+          运行 lint
+        </button>
         <label className="mt-5 block text-xs font-medium text-neutral-600">深度研究主题</label>
         <input className="mt-1 h-10 w-full border border-neutral-300 px-3 text-sm outline-none focus:border-teal-700" value={topic} onChange={(event) => setTopic(event.target.value)} placeholder="例如：RAG 图谱检索" />
-        <button className="mt-3 h-10 w-full bg-neutral-950 text-sm font-medium text-white" onClick={() => void runResearch()}>开始深度研究</button>
+        <button
+          className="mt-3 inline-flex h-10 w-full items-center justify-center gap-2 bg-neutral-950 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
+          disabled={!topic.trim() || runningResearch}
+          onClick={() => void runResearch()}
+          type="button"
+        >
+          {runningResearch ? <Loader2 className="h-4 w-4 animate-spin" /> : <Brain className="h-4 w-4" />}
+          开始深度研究
+        </button>
       </aside>
       <div className="min-h-0 overflow-auto rounded-md border border-neutral-200 bg-white">
-        <div className="sticky top-0 border-b border-neutral-200 bg-white px-4 py-3">
-          <h2 className="text-base font-semibold">审核项</h2>
+        <div className="sticky top-0 z-10 border-b border-neutral-200 bg-white px-4 py-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-base font-semibold">审核项</h2>
+              <p className="mt-1 text-xs text-neutral-500">{reviewCounts.open} 个待处理 · {reviews.length} 个总计</p>
+            </div>
+            <button
+              className="inline-flex h-8 items-center gap-2 border border-neutral-300 px-3 text-xs text-neutral-700 disabled:cursor-not-allowed disabled:opacity-60"
+              disabled={loading}
+              onClick={() => void refreshReviews(true)}
+              type="button"
+            >
+              {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+              刷新
+            </button>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {REVIEW_STATUS_FILTERS.map((item) => {
+              const count = item.key === "all" ? reviews.length : reviewCounts[item.key]
+              const active = statusFilter === item.key
+              return (
+                <button
+                  className={`h-8 border px-3 text-xs ${active ? "border-neutral-950 bg-neutral-950 text-white" : "border-neutral-200 text-neutral-600 hover:border-neutral-300 hover:bg-neutral-50"}`}
+                  key={item.key}
+                  onClick={() => setStatusFilter(item.key)}
+                  type="button"
+                >
+                  {item.label} {count}
+                </button>
+              )
+            })}
+          </div>
+          {error && <div className="mt-3 border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{error}</div>}
         </div>
         <div className="divide-y divide-neutral-200">
-          {reviews.map((review) => (
-            <article key={review.id} className="p-4">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <h3 className="text-sm font-semibold">{review.title}</h3>
-                  <p className="mt-1 text-xs text-neutral-500">{review.kind} · {review.status}</p>
+          {loading ? (
+            <div className="flex items-center justify-center gap-2 p-8 text-sm text-neutral-500">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              正在加载审核项
+            </div>
+          ) : visibleReviews.length === 0 ? (
+            <div className="p-8 text-center text-sm text-neutral-500">暂无{currentFilterLabel}审核项</div>
+          ) : visibleReviews.map((review) => {
+            const status = REVIEW_STATUS_META[review.status]
+            const updating = updatingReviewId === review.id
+            return (
+              <article key={review.id} className="p-4">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-semibold">{review.title}</h3>
+                    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+                      <span className="text-neutral-500">{REVIEW_KIND_LABELS[review.kind]}</span>
+                      <span className={`border px-2 py-1 ${status.className}`}>{status.label}</span>
+                    </div>
+                  </div>
+                  <span className="shrink-0 border border-neutral-300 px-2 py-1 text-xs">{new Date(review.createdAt).toLocaleString()}</span>
                 </div>
-                <span className="border border-neutral-300 px-2 py-1 text-xs">{new Date(review.createdAt).toLocaleString()}</span>
-              </div>
-              <p className="mt-3 text-sm leading-6 text-neutral-700">{review.description}</p>
-              {review.action && <p className="mt-2 text-sm text-teal-800">{review.action}</p>}
-            </article>
-          ))}
+                <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-neutral-700">{review.description}</p>
+                {review.action && <p className="mt-2 text-sm text-teal-800">{review.action}</p>}
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                  <p className="text-xs text-neutral-500">更新于 {new Date(review.updatedAt).toLocaleString()}</p>
+                  <div className="flex flex-wrap gap-2">
+                    {review.status === "open" ? (
+                      <>
+                        <button
+                          className="inline-flex h-8 items-center gap-1.5 border border-teal-700 px-3 text-xs font-medium text-teal-800 hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          disabled={updating}
+                          onClick={() => void updateReviewStatus(review.id, "resolved")}
+                          type="button"
+                        >
+                          {updating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
+                          标记解决
+                        </button>
+                        <button
+                          className="inline-flex h-8 items-center gap-1.5 border border-neutral-300 px-3 text-xs font-medium text-neutral-700 hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          disabled={updating}
+                          onClick={() => void updateReviewStatus(review.id, "dismissed")}
+                          type="button"
+                        >
+                          {updating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <X className="h-3.5 w-3.5" />}
+                          忽略
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        className="inline-flex h-8 items-center gap-1.5 border border-neutral-300 px-3 text-xs font-medium text-neutral-700 hover:bg-neutral-50 disabled:cursor-not-allowed disabled:opacity-60"
+                        disabled={updating}
+                        onClick={() => void updateReviewStatus(review.id, "open")}
+                        type="button"
+                      >
+                        {updating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+                        重新打开
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </article>
+            )
+          })}
         </div>
       </div>
     </section>

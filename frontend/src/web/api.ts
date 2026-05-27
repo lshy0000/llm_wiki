@@ -8,8 +8,12 @@ import type {
   KnowledgeBase,
   ModelProviderTestResult,
   ReviewItem,
+  ReviewStatus,
   SearchResponse,
   SourceDocument,
+  SourceUploadResponse,
+  UserApiKey,
+  UserApiKeyCreated,
   WikiPage,
   WikiTreeGroup,
 } from "./types"
@@ -37,7 +41,7 @@ export function clearAuthToken(): void {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getAuthToken()
   const headers = new Headers(init?.headers)
-  if (!(init?.body instanceof FormData)) headers.set("content-type", "application/json")
+  if (init?.body != null && !(init.body instanceof FormData)) headers.set("content-type", "application/json")
   if (token) headers.set("authorization", `Bearer ${token}`)
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
@@ -80,6 +84,21 @@ export const api = {
     await request<{ ok: true }>("/api/auth/logout", { method: "POST" }).catch(() => undefined)
     clearAuthToken()
   },
+  listApiKeys: () => request<UserApiKey[]>("/api/auth/me/api-keys"),
+  createApiKey: (name: string) =>
+    request<UserApiKeyCreated>("/api/auth/me/api-keys", {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+  updateApiKey: (keyId: string, name: string) =>
+    request<UserApiKey>(`/api/auth/me/api-keys/${encodeURIComponent(keyId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }),
+  deleteApiKey: (keyId: string) =>
+    request<{ ok: true }>(`/api/auth/me/api-keys/${encodeURIComponent(keyId)}`, {
+      method: "DELETE",
+    }),
   listKbs: () => request<KnowledgeBase[]>("/api/kbs"),
   companyModels: () => request<CompanyModel[]>("/api/company/models"),
   saveCompanyModel: (model: Partial<Omit<CompanyModel, "apiKeySet">> & { name: string; model: string; apiKey?: string }) =>
@@ -121,7 +140,7 @@ export const api = {
       form.append("relativePath", item.relativePath)
       form.append("file", item.file, item.relativePath)
     }
-    return request<{ created: Array<{ source: SourceDocument; job: IngestJob }> }>(`/api/kbs/${kbId}/sources`, {
+    return request<SourceUploadResponse>(`/api/kbs/${kbId}/sources`, {
       method: "POST",
       body: form,
     })
@@ -130,7 +149,7 @@ export const api = {
     const form = new FormData()
     form.append("relativePath", relativePath)
     form.append("file", file, relativePath)
-    return request<{ created: Array<{ source: SourceDocument; job: IngestJob }> }>(`/api/kbs/${kbId}/sources`, {
+    return request<SourceUploadResponse>(`/api/kbs/${kbId}/sources`, {
       method: "POST",
       body: form,
     })
@@ -156,6 +175,11 @@ export const api = {
     }),
   lint: (kbId: string) => request<ReviewItem[]>(`/api/kbs/${kbId}/lint`, { method: "POST" }),
   reviews: (kbId: string) => request<ReviewItem[]>(`/api/kbs/${kbId}/reviews`),
+  updateReviewStatus: (kbId: string, reviewId: string, status: ReviewStatus) =>
+    request<ReviewItem>(`/api/kbs/${kbId}/reviews/${encodeURIComponent(reviewId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    }),
   research: (kbId: string, topic: string) =>
     request<{ queries: string[]; imported: number; review: ReviewItem }>(`/api/kbs/${kbId}/research`, {
       method: "POST",

@@ -28,12 +28,10 @@ export function CreateProjectDialog({ open: isOpen, onOpenChange, onCreated }: C
   const [name, setName] = useState("")
   const [path, setPath] = useState("")
   const [selectedTemplate, setSelectedTemplate] = useState("general")
-  // Empty string = "user hasn't picked yet"; we validate this on
-  // submit so a fresh project never starts in implicit auto-detect
-  // mode. Once chosen, the value is one of OUTPUT_LANGUAGE_OPTIONS
-  // (`auto` is a valid explicit choice — the user is then opting
-  // INTO auto-detect rather than getting it by accident).
-  const [language, setLanguage] = useState<string>("")
+  // Default to auto so new projects follow the source document's
+  // language; empty source/input falls back to Chinese in
+  // getOutputLanguage().
+  const [language, setLanguage] = useState<string>("auto")
   const [error, setError] = useState("")
   const [creating, setCreating] = useState(false)
   const setOutputLanguage = useWikiStore((s) => s.setOutputLanguage)
@@ -84,7 +82,7 @@ export function CreateProjectDialog({ open: isOpen, onOpenChange, onCreated }: C
       setName("")
       setPath("")
       setSelectedTemplate("general")
-      setLanguage("")
+      setLanguage("auto")
     } catch (err) {
       setError(String(err))
     } finally {
@@ -117,20 +115,7 @@ export function CreateProjectDialog({ open: isOpen, onOpenChange, onCreated }: C
               onChange={(e) => setLanguage(e.target.value)}
               className="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
             >
-              <option value="" disabled>
-                {t("project.pickLanguage")}
-              </option>
-              {/*
-                * "auto" is intentionally filtered out at project
-                * creation time. Auto-detect is a fine post-hoc
-                * setting (Settings → Output) for users who later
-                * decide they want it, but at create time we force
-                * an explicit commitment so the project never starts
-                * in the implicit-detect mode that was the source
-                * of "wiki content showed up in a language I didn't
-                * expect" surprises.
-                */}
-              {OUTPUT_LANGUAGE_OPTIONS.filter((l) => l.value !== "auto").map((l) => (
+              {OUTPUT_LANGUAGE_OPTIONS.map((l) => (
                 <option key={l.value} value={l.value}>
                   {l.label}
                 </option>

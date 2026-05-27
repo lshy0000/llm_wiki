@@ -21,15 +21,16 @@ import {
   normalizeModelProtocol,
   normalizeProvider,
   testModelProvider,
+  validateRuntimeModelCapabilities,
 } from "./model-providers.js"
 import { ProjectService } from "./project-service.js"
 import { ResearchService } from "./research-service.js"
 import { SearchService } from "./search-service.js"
 import { SourceWatchService } from "./source-watch-service.js"
-import { SourceService } from "./source-service.js"
+import { SourceService, type SourceSaveResult } from "./source-service.js"
 import { LocalStorageProvider } from "./storage.js"
-import type { AuthContext, CompanyModel, KnowledgeBase } from "./types.js"
-import { id, normalizeStorageKey, nowIso } from "./wiki-utils.js"
+import type { AuthContext, CompanyModel, KnowledgeBase, ReviewStatus } from "./types.js"
+import { id, normalizeStorageKey, nowIso, objectContentTypeForFile } from "./wiki-utils.js"
 
 export interface AppServices {
   repo: KnowledgeRepository
@@ -89,8 +90,7 @@ export async function buildApp(dataDir = path.resolve(process.cwd(), ".kn-data")
   }
   const repo = new PostgresRepository(databaseUrl)
   await repo.init()
-  const defaultCompany = await repo.ensureDefaultCompany()
-  await repo.ensureEnvironmentModels(defaultCompany.id)
+  await repo.ensureDefaultCompany()
   const storage = new LocalStorageProvider(path.join(dataDir, "database"))
   const llm = new LlmGateway(repo)
   const auth = new AuthService(repo)
@@ -131,6 +131,42 @@ function registerRoutes(app: AppInstance, services: AppServices): void {
 
   app.post("/api/auth/logout", async (request) => {
     await services.auth.logout(tokenFromRequest(request))
+    return { ok: true }
+  })
+
+  app.get("/api/auth/me/api-keys", async (request, reply) => {
+    const auth = await requireAuth(request, reply, services)
+    if (!auth) return
+    return services.auth.listApiKeys(auth)
+  })
+
+  app.post<{ Body: { name?: string } }>("/api/auth/me/api-keys", async (request, reply) => {
+    const auth = await requireAuth(request, reply, services)
+    if (!auth) return
+    try {
+      return await services.auth.createApiKey(auth, request.body?.name)
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) })
+    }
+  })
+
+  app.patch<{ Params: { keyId: string }; Body: { name?: string } }>("/api/auth/me/api-keys/:keyId", async (request, reply) => {
+    const auth = await requireAuth(request, reply, services)
+    if (!auth) return
+    try {
+      const row = await services.auth.updateApiKey(auth, request.params.keyId, request.body?.name)
+      if (!row) return reply.code(404).send({ error: "API key not found" })
+      return row
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) })
+    }
+  })
+
+  app.delete<{ Params: { keyId: string } }>("/api/auth/me/api-keys/:keyId", async (request, reply) => {
+    const auth = await requireAuth(request, reply, services)
+    if (!auth) return
+    const deleted = await services.auth.deleteApiKey(auth, request.params.keyId)
+    if (!deleted) return reply.code(404).send({ error: "API key not found" })
     return { ok: true }
   })
 
@@ -232,15 +268,35 @@ function registerRoutes(app: AppInstance, services: AppServices): void {
     const endpoint = normalizeModelEndpoint(provider, body.endpoint)
     if (provider === "custom" && !endpoint) return reply.code(400).send({ error: "custom model endpoint is required" })
     const capabilities = normalizeModelCapabilities(body.capabilities)
+    if (capabilities.length < 1 || capabilities.length > 2) {
+      return reply.code(400).send({ error: "模型能力必须选择 1 到 2 项" })
+    }
     // 公司模型的业务唯一键是“最终 endpoint + 模型 ID”。名称只是面向用户展示的主名称，
     // 允许改名，但不能用不同名称重复保存同一个实际调用目标。
-    const duplicate = (await services.repo.listCompanyModels(auth.company.id)).find((item) =>
+    const existingModels = await services.repo.listCompanyModels(auth.company.id)
+    const duplicate = existingModels.find((item) =>
       item.id !== body.id &&
       item.model.trim() === modelName &&
       modelEndpointKey(item.endpoint) === modelEndpointKey(endpoint),
     )
     if (duplicate) {
       return reply.code(409).send({ error: `同一 Endpoint 和模型 ID 已存在：${duplicate.name}` })
+    }
+    const existingModel = body.id ? existingModels.find((item) => item.id === body.id) : undefined
+    const apiKey = body.apiKey?.trim() || existingModel?.apiKey
+    try {
+      await validateRuntimeModelCapabilities(
+        {
+          provider,
+          protocol,
+          endpoint,
+          apiKey,
+          model: modelName,
+        },
+        capabilities,
+      )
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) })
     }
     const model: CompanyModel = {
       id: body.id || id("mdl"),
@@ -250,7 +306,7 @@ function registerRoutes(app: AppInstance, services: AppServices): void {
       protocol,
       model: modelName,
       endpoint,
-      apiKey: body.apiKey?.trim() || undefined,
+      apiKey,
       capabilities,
       isDefaultLlm: Boolean(body.isDefaultLlm) && capabilities.includes("llm"),
       isDefaultEmbedding: Boolean(body.isDefaultEmbedding) && capabilities.includes("embedding"),
@@ -333,7 +389,8 @@ function registerRoutes(app: AppInstance, services: AppServices): void {
     if (!kb) return
     let relativePath = ""
     const uploadBatchId = id("upl")
-    const created = []
+    const created: Array<Extract<SourceSaveResult, { accepted: true }>> = []
+    const skipped: Array<Extract<SourceSaveResult, { accepted: false }>> = []
     for await (const part of request.parts()) {
       if (part.type === "field" && part.fieldname === "relativePath") {
         relativePath = String(part.value || "")
@@ -351,12 +408,26 @@ function registerRoutes(app: AppInstance, services: AppServices): void {
         bytes,
         uploadBatchId,
       })
-      created.push(saved)
+      if (saved.accepted) created.push(saved)
+      else skipped.push(saved)
       relativePath = ""
     }
-    await services.ingest.processQueue()
-    if (created.length === 0) return reply.code(400).send({ error: "No file uploaded" })
-    return { created }
+    if (created.length > 0 && shouldCreateUploadManifest(created, skipped)) {
+      const manifest = buildUploadManifest(uploadBatchId, created, skipped)
+      const savedManifest = await services.source.saveUpload({
+        kbId: kb.id,
+        fileName: "__folder_structure.md",
+        relativePath: manifest.relativePath,
+        contentType: "text/markdown",
+        bytes: manifest.bytes,
+        uploadBatchId,
+      })
+      if (savedManifest.accepted) created.push(savedManifest)
+      else skipped.push(savedManifest)
+    }
+    if (created.some((item) => item.job)) await services.ingest.processQueue()
+    if (created.length === 0) return reply.code(400).send({ error: "No supported file uploaded", skipped })
+    return { created, skipped }
   })
 
   app.get<{ Params: { kbId: string } }>("/api/kbs/:kbId/sources", async (request, reply) => {
@@ -401,11 +472,7 @@ function registerRoutes(app: AppInstance, services: AppServices): void {
     if (!auth || !(await getCompanyKnowledgeBase(services, auth, request.params.kbId, reply))) return
     const key = normalizeStorageKey(decodeURIComponent(request.params.key))
     const bytes = await services.storage.readObject(request.params.kbId, key)
-    const lower = key.toLowerCase()
-    if (lower.endsWith(".png")) reply.header("content-type", "image/png")
-    else if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) reply.header("content-type", "image/jpeg")
-    else if (lower.endsWith(".webp")) reply.header("content-type", "image/webp")
-    else reply.header("content-type", "application/octet-stream")
+    reply.header("content-type", objectContentTypeForFile(key))
     return reply.send(bytes)
   })
 
@@ -478,7 +545,7 @@ function registerRoutes(app: AppInstance, services: AppServices): void {
     async (request, reply) => {
       const auth = await requireAuth(request, reply, services)
       if (!auth || !(await getCompanyKnowledgeBase(services, auth, request.params.kbId, reply))) return
-      if (!request.body.status) return reply.code(400).send({ error: "status is required" })
+      if (!isReviewStatus(request.body.status)) return reply.code(400).send({ error: "status must be open, resolved, or dismissed" })
       const review = await services.repo.updateReviewStatus(request.params.kbId, request.params.reviewId, request.body.status)
       if (!review) return reply.code(404).send({ error: "Review not found" })
       return review
@@ -493,6 +560,80 @@ function registerRoutes(app: AppInstance, services: AppServices): void {
     await services.ingest.processQueue()
     return result
   })
+}
+
+function shouldCreateUploadManifest(
+  created: Array<Extract<SourceSaveResult, { accepted: true }>>,
+  skipped: Array<Extract<SourceSaveResult, { accepted: false }>>,
+): boolean {
+  const paths = [
+    ...created.map((item) => item.source.relativePath),
+    ...skipped.map((item) => item.relativePath),
+  ]
+  return skipped.length > 0 || paths.length > 1 || paths.some((item) => item.includes("/"))
+}
+
+function buildUploadManifest(
+  uploadBatchId: string,
+  created: Array<Extract<SourceSaveResult, { accepted: true }>>,
+  skipped: Array<Extract<SourceSaveResult, { accepted: false }>>,
+): { relativePath: string; bytes: Buffer } {
+  const paths = [
+    ...created.map((item) => item.source.relativePath),
+    ...skipped.map((item) => item.relativePath),
+  ]
+  const rootPath = commonFolderPrefix(paths)
+  const manifestPath = normalizeStorageKey(path.posix.join(rootPath, "__folder_structure.md"))
+  const acceptedLines = created
+    .map((item) => `- ${item.source.relativePath} (${item.admission.kind}, ${item.admission.mode}, ${item.source.size} bytes)`)
+    .join("\n") || "- None"
+  const skippedLines = skipped
+    .map((item) => `- ${item.relativePath}: ${item.reason}`)
+    .join("\n") || "- None"
+  const content = [
+    "# Folder Import Manifest",
+    "",
+    `Upload batch: ${uploadBatchId}`,
+    `Root: ${rootPath || "/"}`,
+    "",
+    "## Accepted Files",
+    "",
+    acceptedLines,
+    "",
+    "## Skipped Files",
+    "",
+    skippedLines,
+    "",
+    "## Directory Tree",
+    "",
+    renderDirectoryTree(paths),
+    "",
+  ].join("\n")
+  return { relativePath: manifestPath, bytes: Buffer.from(content, "utf-8") }
+}
+
+function commonFolderPrefix(paths: string[]): string {
+  const folders = paths
+    .map((item) => normalizeStorageKey(item).split("/").slice(0, -1))
+    .filter((parts) => parts.length > 0)
+  if (folders.length === 0) return ""
+  const prefix: string[] = []
+  for (let index = 0; index < folders[0].length; index += 1) {
+    const part = folders[0][index]
+    if (folders.every((folder) => folder[index] === part)) prefix.push(part)
+    else break
+  }
+  return prefix.join("/")
+}
+
+function renderDirectoryTree(paths: string[]): string {
+  if (paths.length === 0) return "- /"
+  const sorted = [...new Set(paths.map(normalizeStorageKey))].sort((a, b) => a.localeCompare(b))
+  return sorted.map((item) => `- ${item}`).join("\n")
+}
+
+function isReviewStatus(value: unknown): value is ReviewStatus {
+  return value === "open" || value === "resolved" || value === "dismissed"
 }
 
 function tokenFromRequest(request: FastifyRequest): string | undefined {
@@ -518,7 +659,7 @@ function normalizeModelCapabilities(capabilities?: string[]): CompanyModel["capa
   for (const capability of capabilities ?? []) {
     if (capability === "llm" || capability === "embedding" || capability === "vision") values.add(capability)
   }
-  return values.size > 0 ? [...values] : ["llm"]
+  return [...values]
 }
 
 async function requireAuth(

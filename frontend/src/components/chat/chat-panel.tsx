@@ -12,7 +12,7 @@ import { listDirectory, readFile, deleteFile } from "@/commands/fs"
 import { searchWiki } from "@/lib/search"
 import { buildRetrievalGraph, getRelatedNodes } from "@/lib/graph-relevance"
 import { normalizePath, getFileName, getRelativePath } from "@/lib/path-utils"
-import { getOutputLanguage, buildLanguageReminder } from "@/lib/output-language"
+import { getOutputLanguage, buildLanguageDirective, buildLanguageReminder } from "@/lib/output-language"
 import { isGreeting } from "@/lib/greeting-detector"
 import { computeContextBudget } from "@/lib/context-budget"
 
@@ -309,8 +309,6 @@ export function ChatPanel() {
           `[${i + 1}] ${p.title} (${p.path})`
         ).join("\n")
 
-        const outLang = getOutputLanguage(text)
-
         systemMessages.push({
           role: "system",
           content: [
@@ -333,13 +331,7 @@ export function ChatPanel() {
             "",
             "---",
             "",
-            `## ⚠️ MANDATORY OUTPUT LANGUAGE: ${outLang}`,
-            "",
-            `You MUST write your entire response in **${outLang}**.`,
-            `The wiki content above may be in a different language, but this is IRRELEVANT to your output language.`,
-            `Ignore the language of the wiki content. Write in ${outLang} only.`,
-            `Even proper nouns should use standard ${outLang} transliteration when appropriate.`,
-            `DO NOT use any other language. This overrides all other instructions.`,
+            buildLanguageDirective(text),
           ].filter(Boolean).join("\n"),
         })
 

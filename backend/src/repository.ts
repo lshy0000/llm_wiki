@@ -18,25 +18,24 @@ import type {
   PageSource,
   ReviewItem,
   SourceDocument,
+  UserApiKey,
   WikiLink,
   WikiPage,
 } from "./types.js"
 import {
-  defaultEndpointForProvider,
   normalizeModelProtocol,
-  providerFromModel,
 } from "./model-providers.js"
 import { id, nowIso } from "./wiki-utils.js"
 
 const { Pool } = pg
 const DEFAULT_COMPANY_NAME = "祥承科技"
 const DEFAULT_COMPANY_SLUG = "xiangcheng-tech"
+const API_KEY_AUTH_EXPIRES_AT = "9999-12-31T23:59:59.999Z"
 
 export interface KnowledgeRepository {
   init(): Promise<void>
   close(): Promise<void>
   ensureDefaultCompany(): Promise<Company>
-  ensureEnvironmentModels(companyId: string): Promise<void>
   upsertIdentity(input: {
     provider: "ldap" | "local"
     providerSubject: string
@@ -63,6 +62,17 @@ export interface KnowledgeRepository {
   }): Promise<AuthSession>
   getSessionByTokenHash(tokenHash: string): Promise<AuthContext | undefined>
   deleteSession(tokenHash: string): Promise<void>
+  listApiKeys(identityId: string, companyId: string): Promise<UserApiKey[]>
+  createApiKey(input: {
+    identityId: string
+    companyId: string
+    name: string
+    keyHash: string
+    keyHint: string
+  }): Promise<UserApiKey>
+  updateApiKey(identityId: string, companyId: string, keyId: string, name: string): Promise<UserApiKey | undefined>
+  deleteApiKey(identityId: string, companyId: string, keyId: string): Promise<boolean>
+  getApiKeyAuthContextByTokenHash(tokenHash: string): Promise<AuthContext | undefined>
   listKnowledgeBases(companyId?: string, identityId?: string): Promise<KnowledgeBase[]>
   getKnowledgeBase(kbId: string): Promise<KnowledgeBase | undefined>
   saveKnowledgeBase(kb: KnowledgeBase): Promise<KnowledgeBase>
@@ -187,55 +197,6 @@ export class PostgresRepository implements KnowledgeRepository {
     return this.mapCompany(inserted.rows[0])
   }
 
-  async ensureEnvironmentModels(companyId: string): Promise<void> {
-    const existing = await this.listCompanyModels(companyId)
-    if (existing.length > 0) return
-
-    const chatEndpoint = process.env.KN_LLM_ENDPOINT ?? process.env.LLM_ENDPOINT ?? ""
-    const chatModel = process.env.KN_LLM_MODEL ?? process.env.LLM_MODEL ?? "gpt-4o-mini"
-    const chatApiKey = process.env.KN_LLM_API_KEY ?? process.env.LLM_API_KEY ?? ""
-    const chatProvider = providerFromModel(chatModel, chatEndpoint)
-    const chatNow = nowIso()
-    await this.saveCompanyModel({
-      id: id("mdl"),
-      companyId,
-      name: "默认 LLM / Vision",
-      provider: chatProvider,
-      protocol: normalizeModelProtocol(chatProvider),
-      model: chatModel,
-      endpoint: chatEndpoint || defaultEndpointForProvider(chatProvider),
-      apiKey: chatApiKey || undefined,
-      capabilities: ["llm", "vision"],
-      isDefaultLlm: true,
-      isDefaultEmbedding: false,
-      isDefaultVision: true,
-      createdAt: chatNow,
-      updatedAt: chatNow,
-    })
-
-    const embeddingEndpoint = process.env.KN_EMBEDDING_ENDPOINT ?? process.env.KN_LLM_ENDPOINT ?? ""
-    const embeddingModel = process.env.KN_EMBEDDING_MODEL ?? "text-embedding-3-small"
-    const embeddingApiKey = process.env.KN_EMBEDDING_API_KEY ?? chatApiKey
-    const embeddingProvider = providerFromModel(embeddingModel, embeddingEndpoint)
-    const embeddingNow = nowIso()
-    await this.saveCompanyModel({
-      id: id("mdl"),
-      companyId,
-      name: "默认 Embedding",
-      provider: embeddingProvider,
-      protocol: normalizeModelProtocol(embeddingProvider),
-      model: embeddingModel,
-      endpoint: embeddingEndpoint || defaultEndpointForProvider(embeddingProvider),
-      apiKey: embeddingApiKey || undefined,
-      capabilities: ["embedding"],
-      isDefaultLlm: false,
-      isDefaultEmbedding: true,
-      isDefaultVision: false,
-      createdAt: embeddingNow,
-      updatedAt: embeddingNow,
-    })
-  }
-
   private async ensureSchemaCompatibility(): Promise<void> {
     await this.pool.query(`
       ALTER TABLE identities ADD COLUMN IF NOT EXISTS password_hash TEXT;
@@ -261,6 +222,20 @@ export class PostgresRepository implements KnowledgeRepository {
       CREATE UNIQUE INDEX IF NOT EXISTS company_models_default_llm_uidx ON company_models(company_id) WHERE is_default_llm;
       CREATE UNIQUE INDEX IF NOT EXISTS company_models_default_embedding_uidx ON company_models(company_id) WHERE is_default_embedding;
       CREATE UNIQUE INDEX IF NOT EXISTS company_models_default_vision_uidx ON company_models(company_id) WHERE is_default_vision;
+
+      CREATE TABLE IF NOT EXISTS user_api_keys (
+        id TEXT PRIMARY KEY,
+        identity_id TEXT NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+        company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        key_hash TEXT NOT NULL UNIQUE,
+        key_hint TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS user_api_keys_identity_company_idx ON user_api_keys(identity_id, company_id, created_at DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS user_api_keys_key_hash_uidx ON user_api_keys(key_hash);
+
       ALTER TABLE company_models ADD COLUMN IF NOT EXISTS protocol TEXT NOT NULL DEFAULT 'openai_compatible';
       ALTER TABLE company_models DROP CONSTRAINT IF EXISTS company_models_protocol_check;
       UPDATE company_models SET protocol = 'anthropic_messages' WHERE provider = 'claudecode';
@@ -601,6 +576,116 @@ export class PostgresRepository implements KnowledgeRepository {
 
   async deleteSession(tokenHash: string): Promise<void> {
     await this.pool.query("DELETE FROM auth_sessions WHERE token_hash = $1", [tokenHash])
+  }
+
+  async listApiKeys(identityId: string, companyId: string): Promise<UserApiKey[]> {
+    const result = await this.pool.query<Row>(
+      `SELECT *
+       FROM user_api_keys
+       WHERE identity_id = $1 AND company_id = $2
+       ORDER BY created_at DESC`,
+      [identityId, companyId],
+    )
+    return result.rows.map((row) => this.mapApiKey(row))
+  }
+
+  async createApiKey(input: {
+    identityId: string
+    companyId: string
+    name: string
+    keyHash: string
+    keyHint: string
+  }): Promise<UserApiKey> {
+    const now = nowIso()
+    const result = await this.pool.query<Row>(
+      `INSERT INTO user_api_keys (id, identity_id, company_id, name, key_hash, key_hint, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+       RETURNING *`,
+      [id("key"), input.identityId, input.companyId, input.name, input.keyHash, input.keyHint, now],
+    )
+    return this.mapApiKey(result.rows[0])
+  }
+
+  async updateApiKey(identityId: string, companyId: string, keyId: string, name: string): Promise<UserApiKey | undefined> {
+    const result = await this.pool.query<Row>(
+      `UPDATE user_api_keys
+       SET name = $4, updated_at = $5
+       WHERE id = $1 AND identity_id = $2 AND company_id = $3
+       RETURNING *`,
+      [keyId, identityId, companyId, name, nowIso()],
+    )
+    return result.rows[0] ? this.mapApiKey(result.rows[0]) : undefined
+  }
+
+  async deleteApiKey(identityId: string, companyId: string, keyId: string): Promise<boolean> {
+    const result = await this.pool.query(
+      "DELETE FROM user_api_keys WHERE id = $1 AND identity_id = $2 AND company_id = $3",
+      [keyId, identityId, companyId],
+    )
+    return (result.rowCount ?? 0) > 0
+  }
+
+  async getApiKeyAuthContextByTokenHash(tokenHash: string): Promise<AuthContext | undefined> {
+    const result = await this.pool.query<Row>(
+      `SELECT
+         k.id AS api_key_id, k.key_hash, k.identity_id AS key_identity_id, k.company_id AS key_company_id,
+         k.created_at AS key_created_at, k.updated_at AS key_updated_at,
+         i.id AS identity_id, i.provider, i.provider_subject, i.username, i.display_name, i.email, i.password_hash, i.is_platform_admin,
+         i.created_at AS identity_created_at, i.updated_at AS identity_updated_at,
+         c.id AS company_id, c.name AS company_name, c.slug, c.is_default,
+         c.created_at AS company_created_at, c.updated_at AS company_updated_at,
+         m.id AS company_member_id, m.role, m.status, m.joined_at, m.updated_at AS member_updated_at
+       FROM user_api_keys k
+       JOIN identities i ON i.id = k.identity_id
+       JOIN companies c ON c.id = k.company_id
+       JOIN company_members m ON m.company_id = k.company_id AND m.identity_id = k.identity_id
+       WHERE k.key_hash = $1 AND m.status = 'active'
+       LIMIT 1`,
+      [tokenHash],
+    )
+    const row = result.rows[0]
+    if (!row) return undefined
+    return {
+      session: {
+        id: String(row.api_key_id),
+        tokenHash: String(row.key_hash),
+        identityId: String(row.key_identity_id),
+        companyId: String(row.key_company_id),
+        memberId: String(row.company_member_id),
+        expiresAt: API_KEY_AUTH_EXPIRES_AT,
+        createdAt: iso(row.key_created_at),
+        lastSeenAt: iso(row.key_updated_at),
+      },
+      identity: {
+        id: String(row.identity_id),
+        provider: String(row.provider) as Identity["provider"],
+        providerSubject: String(row.provider_subject),
+        username: String(row.username),
+        displayName: String(row.display_name),
+        email: row.email ? String(row.email) : undefined,
+        passwordHash: row.password_hash ? String(row.password_hash) : undefined,
+        isPlatformAdmin: Boolean(row.is_platform_admin),
+        createdAt: iso(row.identity_created_at),
+        updatedAt: iso(row.identity_updated_at),
+      },
+      company: {
+        id: String(row.company_id),
+        name: String(row.company_name),
+        slug: String(row.slug),
+        isDefault: Boolean(row.is_default),
+        createdAt: iso(row.company_created_at),
+        updatedAt: iso(row.company_updated_at),
+      },
+      member: {
+        id: String(row.company_member_id),
+        companyId: String(row.company_id),
+        identityId: String(row.identity_id),
+        role: String(row.role) as CompanyMemberRole,
+        status: "active",
+        joinedAt: iso(row.joined_at),
+        updatedAt: iso(row.member_updated_at),
+      },
+    }
   }
 
   async listKnowledgeBases(companyId?: string, identityId?: string): Promise<KnowledgeBase[]> {
@@ -1094,6 +1179,19 @@ export class PostgresRepository implements KnowledgeRepository {
       expiresAt: iso(row.expires_at),
       createdAt: iso(row.created_at),
       lastSeenAt: iso(row.last_seen_at),
+    }
+  }
+
+  private mapApiKey(row: Row): UserApiKey {
+    return {
+      id: String(row.id),
+      identityId: String(row.identity_id),
+      companyId: String(row.company_id),
+      name: String(row.name),
+      keyHash: String(row.key_hash),
+      keyHint: String(row.key_hint ?? ""),
+      createdAt: iso(row.created_at),
+      updatedAt: iso(row.updated_at),
     }
   }
 

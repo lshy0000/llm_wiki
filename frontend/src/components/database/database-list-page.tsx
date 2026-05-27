@@ -137,7 +137,7 @@ function CreateKnowledgeBase({ onCreated }: { onCreated: (kb: KnowledgeBase) => 
         setEmbeddingModels(items)
         // 新知识库会固定使用创建时选中的 embedding 模型，避免后续默认模型变化后，
         // 旧 chunk 向量和新查询向量进入不同语义空间。没有 embedding 模型时保持空值，搜索自然退回关键词召回。
-        const defaultModel = items.find((model) => model.isDefaultEmbedding) ?? items[0]
+        const defaultModel = items.find((model) => model.isDefaultEmbedding)
         setEmbeddingModelId(defaultModel?.id ?? "")
       })
       .catch(() => {
@@ -159,7 +159,7 @@ function CreateKnowledgeBase({ onCreated }: { onCreated: (kb: KnowledgeBase) => 
       setName("")
       setDescription("")
       setVisibility("company")
-      const defaultModel = embeddingModels.find((model) => model.isDefaultEmbedding) ?? embeddingModels[0]
+      const defaultModel = embeddingModels.find((model) => model.isDefaultEmbedding)
       setEmbeddingModelId(defaultModel?.id ?? "")
     } finally {
       setBusy(false)
@@ -170,7 +170,7 @@ function CreateKnowledgeBase({ onCreated }: { onCreated: (kb: KnowledgeBase) => 
     <section>
       <h2 className="text-sm font-semibold">知识库配置</h2>
       <p className="mt-2 text-sm leading-5 text-neutral-600">
-        创建后会初始化 llm_wiki 规则、schema、purpose、wiki/index 和 overview。
+        创建后会初始化 KN 规则、schema、purpose、wiki/index 和 overview。
       </p>
       <label className="mt-5 block text-xs font-medium text-neutral-600">名称</label>
       <input
@@ -216,6 +216,7 @@ function CreateKnowledgeBase({ onCreated }: { onCreated: (kb: KnowledgeBase) => 
           disabled={busy}
           onChange={(event) => setEmbeddingModelId(event.target.value)}
         >
+          <option value="">请选择向量模型</option>
           {embeddingModels.map((model) => (
             <option key={model.id} value={model.id}>{embeddingModelLabel(model)}</option>
           ))}

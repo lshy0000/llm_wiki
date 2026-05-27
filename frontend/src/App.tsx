@@ -4,6 +4,7 @@ import { CompanySettingsPage } from "@/components/company-settings/company-setti
 import { CreateKnowledgeBaseModal, DatabaseListPage } from "@/components/database/database-list-page"
 import { KnowledgeBaseDetail } from "@/components/knowledge-base/knowledge-base-detail"
 import { ExtensionsPage } from "@/pages/extensions-page"
+import { ApiKeysPage } from "@/pages/api-keys-page"
 import { LandingPage } from "@/pages/landing-page"
 import { LoginPage } from "@/pages/login-page"
 import { api } from "@/web/api"
@@ -15,6 +16,7 @@ type AppRoute =
   | { page: "detail"; kbId: string }
   | { page: "extensions" }
   | { page: "companySettings" }
+  | { page: "apiKeys" }
 
 function App() {
   const [auth, setAuth] = useState<AuthPayload | null>(null)
@@ -145,6 +147,14 @@ function App() {
     )
   }
 
+  if (route.page === "apiKeys") {
+    return (
+      <AppShell auth={auth} activePage={route.page} onNavigate={navigate} onLogout={() => void logout()}>
+        <ApiKeysPage />
+      </AppShell>
+    )
+  }
+
   return (
     <AppShell auth={auth} activePage={route.page} onNavigate={navigate} onLogout={() => void logout()}>
       <DatabaseListPage
@@ -174,6 +184,7 @@ function readRoute(): AppRoute {
   if (pathname === "/database") return { page: "database" }
   if (pathname === "/extensions") return { page: "extensions" }
   if (pathname === "/company-settings") return { page: "companySettings" }
+  if (pathname === "/account/api-keys") return { page: "apiKeys" }
   if (pathname.startsWith("/database/")) {
     const kbId = decodeURIComponent(pathname.slice("/database/".length))
     return kbId ? { page: "detail", kbId } : { page: "database" }

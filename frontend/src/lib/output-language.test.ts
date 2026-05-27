@@ -19,6 +19,16 @@ describe("getOutputLanguage", () => {
     expect(getOutputLanguage("This is clearly English text")).toBe("Japanese")
   })
 
+  it("treats English as a weak default when input is clearly non-English", () => {
+    useWikiStore.getState().setOutputLanguage("English")
+    expect(getOutputLanguage("注意力机制是什么")).toBe("Chinese")
+  })
+
+  it("treats English as a weak default with no input by preferring Chinese", () => {
+    useWikiStore.getState().setOutputLanguage("English")
+    expect(getOutputLanguage()).toBe("Chinese")
+  })
+
   it("auto mode falls back to detectLanguage on the fallback text", () => {
     useWikiStore.getState().setOutputLanguage("auto")
     expect(getOutputLanguage("注意力机制是什么")).toBe("Chinese")
@@ -29,14 +39,14 @@ describe("getOutputLanguage", () => {
     expect(getOutputLanguage("پردازش زبان طبیعی در فارسی کاربردهای زیادی دارد")).toBe("Persian")
   })
 
-  it("auto mode with empty fallback defaults to English", () => {
+  it("auto mode with empty fallback defaults to Chinese", () => {
     useWikiStore.getState().setOutputLanguage("auto")
-    expect(getOutputLanguage("")).toBe("English")
+    expect(getOutputLanguage("")).toBe("Chinese")
   })
 
-  it("auto mode with no fallback arg defaults to English", () => {
+  it("auto mode with no fallback arg defaults to Chinese", () => {
     useWikiStore.getState().setOutputLanguage("auto")
-    expect(getOutputLanguage()).toBe("English")
+    expect(getOutputLanguage()).toBe("Chinese")
   })
 })
 
@@ -74,10 +84,12 @@ describe("buildLanguageDirective", () => {
     expect(directive).toContain("MANDATORY OUTPUT LANGUAGE: Persian (Farsi / فارسی)")
   })
 
-  it("explicitly overrides source content language", () => {
+  it("preserves source terminology instead of treating source language as irrelevant", () => {
     useWikiStore.getState().setOutputLanguage("English")
     const directive = buildLanguageDirective()
-    expect(directive).toContain("IRRELEVANT to your output language")
+    expect(directive).toContain("Preserve source terminology")
+    expect(directive).toContain("canonical names")
+    expect(directive).not.toContain("IRRELEVANT to your output language")
   })
 })
 
@@ -85,7 +97,8 @@ describe("buildLanguageReminder", () => {
   it("is a concise reminder, not a full directive", () => {
     useWikiStore.getState().setOutputLanguage("Chinese")
     const reminder = buildLanguageReminder()
-    expect(reminder).toMatch(/All output must be in Chinese/)
+    expect(reminder).toMatch(/Write explanatory text in Chinese/)
+    expect(reminder).toMatch(/preserve source terms/)
     // Reminder should be ONE line, not a multi-line block
     expect(reminder.split("\n").length).toBe(1)
   })

@@ -33,10 +33,10 @@ describe("buildAnalysisPrompt language directive", () => {
     expect(prompt).toContain("MANDATORY OUTPUT LANGUAGE: Japanese")
   })
 
-  it("auto mode with empty source defaults to English", () => {
+  it("auto mode with empty source defaults to Chinese", () => {
     useWikiStore.getState().setOutputLanguage("auto")
     const prompt = buildAnalysisPrompt("", "", "")
-    expect(prompt).toContain("MANDATORY OUTPUT LANGUAGE: English")
+    expect(prompt).toContain("MANDATORY OUTPUT LANGUAGE: Chinese")
   })
 
   it("contains structural analysis sections", () => {
@@ -72,11 +72,17 @@ describe("buildGenerationPrompt language directive", () => {
     expect(prompt).toContain("my-paper.pdf")
   })
 
-  it("respects user setting regardless of source content language", () => {
+  it("preserves source terminology and canonical names", () => {
+    const prompt = buildGenerationPrompt("", "", "", "my-paper.pdf")
+    expect(prompt).toContain("Preserve source terminology")
+    expect(prompt).toContain("Preserve source terms and canonical names exactly")
+  })
+
+  it("treats English setting as a weak default for non-English source content", () => {
     useWikiStore.getState().setOutputLanguage("English")
     const prompt = buildGenerationPrompt("", "", "", "x.pdf", undefined, "私は日本語の文章を書きます")
-    expect(prompt).toContain("MANDATORY OUTPUT LANGUAGE: English")
-    expect(prompt).not.toContain("OUTPUT LANGUAGE: Japanese")
+    expect(prompt).toContain("MANDATORY OUTPUT LANGUAGE: Japanese")
+    expect(prompt).not.toContain("OUTPUT LANGUAGE: English")
   })
 })
 

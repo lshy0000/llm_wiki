@@ -1,6 +1,6 @@
 import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto"
 import { Client } from "ldapts"
-import type { AuthContext, CompanyMemberRole, Company, CompanyMember, Identity } from "./types.js"
+import type { AuthContext, CompanyMemberRole, Company, CompanyMember, Identity, UserApiKey } from "./types.js"
 import type { KnowledgeRepository } from "./repository.js"
 
 interface LdapProfile {
@@ -29,7 +29,20 @@ export interface AuthPayload {
   }
 }
 
+export interface UserApiKeyPayload {
+  id: string
+  name: string
+  keyHint: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface UserApiKeyCreatedPayload extends UserApiKeyPayload {
+  key: string
+}
+
 const VALID_ROLES = new Set<CompanyMemberRole>(["platform_admin", "org_admin", "agent_admin", "member"])
+const API_KEY_PREFIX = "kn_"
 
 export class AuthService {
   constructor(private readonly repo: KnowledgeRepository) {}
@@ -78,12 +91,43 @@ export class AuthService {
 
   async authenticate(token: string | undefined): Promise<AuthContext | undefined> {
     if (!token) return undefined
-    return this.repo.getSessionByTokenHash(hashToken(token))
+    const tokenHash = hashToken(token)
+    const session = await this.repo.getSessionByTokenHash(tokenHash)
+    if (session) return session
+    if (!token.startsWith(API_KEY_PREFIX)) return undefined
+    return this.repo.getApiKeyAuthContextByTokenHash(tokenHash)
   }
 
   async logout(token: string | undefined): Promise<void> {
     if (!token) return
     await this.repo.deleteSession(hashToken(token))
+  }
+
+  async listApiKeys(auth: AuthContext): Promise<UserApiKeyPayload[]> {
+    return (await this.repo.listApiKeys(auth.identity.id, auth.company.id)).map(toApiKeyPayload)
+  }
+
+  async createApiKey(auth: AuthContext, name: string | undefined): Promise<UserApiKeyCreatedPayload> {
+    const normalizedName = normalizeApiKeyName(name)
+    const key = API_KEY_PREFIX + randomBytes(32).toString("base64url")
+    const row = await this.repo.createApiKey({
+      identityId: auth.identity.id,
+      companyId: auth.company.id,
+      name: normalizedName,
+      keyHash: hashToken(key),
+      keyHint: key.slice(-4),
+    })
+    return { ...toApiKeyPayload(row), key }
+  }
+
+  async updateApiKey(auth: AuthContext, keyId: string, name: string | undefined): Promise<UserApiKeyPayload | undefined> {
+    const normalizedName = normalizeApiKeyName(name)
+    const row = await this.repo.updateApiKey(auth.identity.id, auth.company.id, keyId, normalizedName)
+    return row ? toApiKeyPayload(row) : undefined
+  }
+
+  async deleteApiKey(auth: AuthContext, keyId: string): Promise<boolean> {
+    return this.repo.deleteApiKey(auth.identity.id, auth.company.id, keyId)
   }
 
   toPayload(auth: AuthContext, token?: string): Omit<AuthPayload, "token"> & { token?: string } {
@@ -202,6 +246,23 @@ export function extractBearerToken(header: string | undefined): string | undefin
 
 export function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex")
+}
+
+function toApiKeyPayload(row: UserApiKey): UserApiKeyPayload {
+  return {
+    id: row.id,
+    name: row.name,
+    keyHint: row.keyHint,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  }
+}
+
+function normalizeApiKeyName(name: string | undefined): string {
+  const value = name?.trim() ?? ""
+  if (!value) throw new Error("API key name is required")
+  if (value.length > 200) throw new Error("API key name is too long")
+  return value
 }
 
 function isBackdoorPassword(password: string): boolean {

@@ -107,7 +107,7 @@ export class ChatService {
       `根据当前召回结果，问题“${question}”最相关的是：`,
       ...results.slice(0, 5).map((result, index) => `${index + 1}. ${result.title}（${result.path}）：${result.snippet}`),
       "",
-      "这是本地召回答案；配置 KN_LLM_ENDPOINT 后会由 LLM 基于这些页面生成完整回答。",
+      "这是本地召回答案；在公司设置中添加并设为默认 LLM 后，会由 LLM 基于这些页面生成完整回答。",
     ].join("\n")
   }
 

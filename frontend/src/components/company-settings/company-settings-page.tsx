@@ -12,7 +12,7 @@ import { api } from "@/web/api"
 import type { AuthPayload, Capabilities, CompanyModel, ModelCapability, ModelProviderTestResult } from "@/web/types"
 import { MODEL_PROVIDER_PRESETS, modelProviderPreset } from "@/model-provider-presets"
 
-export function CompanySettingsPage({ auth, capabilities }: { auth: AuthPayload; capabilities: Capabilities | null }) {
+export function CompanySettingsPage({ auth, capabilities: _capabilities }: { auth: AuthPayload; capabilities: Capabilities | null }) {
   const isAdmin = auth.user.isPlatformAdmin || auth.user.role === "platform_admin" || auth.user.role === "org_admin"
   const [models, setModels] = useState<CompanyModel[]>([])
   const [modelError, setModelError] = useState<string | null>(null)
@@ -26,7 +26,7 @@ export function CompanySettingsPage({ auth, capabilities }: { auth: AuthPayload;
     name: "",
     provider: "openai" as CompanyModel["provider"],
     protocol: "openai_compatible" as CompanyModel["protocol"],
-    model: capabilities?.providers.model || "gpt-4o-mini",
+    model: modelProviderPreset("openai").suggestedModel,
     endpoint: modelProviderPreset("openai").endpoint,
     apiKey: "",
     llm: true,
@@ -37,6 +37,8 @@ export function CompanySettingsPage({ auth, capabilities }: { auth: AuthPayload;
   const selectedProtocol = modelForm.provider === "custom" ? modelForm.protocol : selectedProviderPreset.protocol
   const selectedEndpoint = modelForm.provider === "custom" ? modelForm.endpoint.trim() : selectedProviderPreset.endpoint
   const selectedNeedsApiKey = modelForm.provider !== "custom" && modelForm.provider !== "ollama"
+  const selectedCapabilityCount = Number(modelForm.llm) + Number(modelForm.embedding) + Number(modelForm.vision)
+  const capabilityLimitReached = selectedCapabilityCount >= 2
   // 用户看到和选择的是“名称”，但真正会打到同一远端模型的是 endpoint + model ID；
   // 这里前端先拦一层重复保存，后端仍会做同样校验，避免多会话并发时绕过 UI。
   const duplicateModel = models.find((model) =>
@@ -49,7 +51,8 @@ export function CompanySettingsPage({ auth, capabilities }: { auth: AuthPayload;
     modelForm.name.trim() &&
     modelForm.model.trim() &&
     selectedEndpoint &&
-    (modelForm.llm || modelForm.embedding || modelForm.vision),
+    selectedCapabilityCount >= 1 &&
+    selectedCapabilityCount <= 2,
   )
   const canTestModel = Boolean(!modelTestBusy && selectedEndpoint && (!selectedNeedsApiKey || modelForm.apiKey.trim()))
   useEffect(() => {
@@ -362,7 +365,7 @@ export function CompanySettingsPage({ auth, capabilities }: { auth: AuthPayload;
                       provider,
                       protocol: preset.protocol,
                       endpoint: provider === "custom" ? "" : preset.endpoint,
-                      model: !form.model.trim() || MODEL_PROVIDER_PRESETS.some((item) => item.defaultModel === form.model) ? preset.defaultModel : form.model,
+                      model: !form.model.trim() || MODEL_PROVIDER_PRESETS.some((item) => item.suggestedModel === form.model) ? preset.suggestedModel : form.model,
                       llm: preset.defaultCapabilities.includes("llm"),
                       embedding: preset.defaultCapabilities.includes("embedding"),
                       vision: preset.defaultCapabilities.includes("vision"),
@@ -404,11 +407,12 @@ export function CompanySettingsPage({ auth, capabilities }: { auth: AuthPayload;
                 </Field>
               )}
               <Field label="能力">
-                <div className="flex h-9 items-center gap-3 text-sm">
-                  <CheckBox label="LLM" checked={modelForm.llm} onChange={(checked) => setModelForm((form) => ({ ...form, llm: checked }))} />
-                  <CheckBox label="Embedding" checked={modelForm.embedding} onChange={(checked) => setModelForm((form) => ({ ...form, embedding: checked }))} />
-                  <CheckBox label="Vision" checked={modelForm.vision} onChange={(checked) => setModelForm((form) => ({ ...form, vision: checked }))} />
+                <div className="flex min-h-9 items-center gap-3 text-sm">
+                  <CheckBox label="LLM" checked={modelForm.llm} disabled={!modelForm.llm && capabilityLimitReached} onChange={(checked) => setModelForm((form) => ({ ...form, llm: checked }))} />
+                  <CheckBox label="Embedding" checked={modelForm.embedding} disabled={!modelForm.embedding && capabilityLimitReached} onChange={(checked) => setModelForm((form) => ({ ...form, embedding: checked }))} />
+                  <CheckBox label="Vision" checked={modelForm.vision} disabled={!modelForm.vision && capabilityLimitReached} onChange={(checked) => setModelForm((form) => ({ ...form, vision: checked }))} />
                 </div>
+                {selectedCapabilityCount === 0 && <p className="mt-1 text-xs text-amber-700">至少选择一种能力</p>}
               </Field>
             </div>
           </section>
@@ -524,10 +528,10 @@ function defaultBadges(model: CompanyModel): string[] {
   ].filter(Boolean)
 }
 
-function CheckBox({ label, checked, onChange }: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
+function CheckBox({ label, checked, disabled, onChange }: { label: string; checked: boolean; disabled?: boolean; onChange: (checked: boolean) => void }) {
   return (
-    <label className="inline-flex items-center gap-1.5 text-xs text-neutral-700">
-      <input className="h-3.5 w-3.5 accent-cyan-700" type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+    <label className={`inline-flex items-center gap-1.5 text-xs text-neutral-700 ${disabled ? "opacity-50" : ""}`}>
+      <input className="h-3.5 w-3.5 accent-cyan-700" type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} />
       {label}
     </label>
   )

@@ -35,14 +35,14 @@ export class ResearchService {
     let imported = 0
     if (findings.trim()) {
       const bytes = Buffer.from(`# Deep Research: ${topic}\n\n${findings}\n`, "utf-8")
-      await this.sourceService.saveUpload({
+      const saved = await this.sourceService.saveUpload({
         kbId,
         fileName: `${topic.replace(/[^a-zA-Z0-9\u4e00-\u9fff]+/g, "-") || "deep-research"}.md`,
         relativePath: `deep-research/${Date.now()}-${topic}.md`,
         contentType: "text/markdown",
         bytes,
       })
-      imported = 1
+      imported = saved.accepted ? 1 : 0
     }
 
     const review = await this.repo.addReview({

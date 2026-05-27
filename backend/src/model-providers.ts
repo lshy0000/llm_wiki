@@ -25,7 +25,7 @@ export interface ModelProviderManifest {
   protocol: ModelProtocol
   selectableProtocol: boolean
   apiKeyRequired: boolean
-  defaultModel: string
+  suggestedModel: string
   defaultCapabilities: ModelCapability[]
   description: string
 }
@@ -64,6 +64,8 @@ interface EmbeddingResponse {
   data?: Array<{ embedding?: number[] }>
 }
 
+const MODEL_SAVE_VALIDATION_TIMEOUT_MS = 20_000
+
 export const MODEL_PROVIDER_MANIFESTS: Record<ModelProvider, ModelProviderManifest> = {
   openai: {
     provider: "openai",
@@ -72,7 +74,7 @@ export const MODEL_PROVIDER_MANIFESTS: Record<ModelProvider, ModelProviderManife
     protocol: "openai_compatible",
     selectableProtocol: false,
     apiKeyRequired: true,
-    defaultModel: "gpt-4o-mini",
+    suggestedModel: "gpt-4o-mini",
     defaultCapabilities: ["llm", "vision"],
     description: "OpenAI 官方 API，由后端按 OpenAI Chat Completions / Embeddings 协议调用。",
   },
@@ -83,7 +85,7 @@ export const MODEL_PROVIDER_MANIFESTS: Record<ModelProvider, ModelProviderManife
     protocol: "openai_compatible",
     selectableProtocol: false,
     apiKeyRequired: true,
-    defaultModel: "qwen-plus",
+    suggestedModel: "qwen-plus",
     defaultCapabilities: ["llm", "vision"],
     description: "阿里云百炼 DashScope 模式，使用 DashScope API Key。",
   },
@@ -94,7 +96,7 @@ export const MODEL_PROVIDER_MANIFESTS: Record<ModelProvider, ModelProviderManife
     protocol: "openai_compatible",
     selectableProtocol: false,
     apiKeyRequired: true,
-    defaultModel: "deepseek-v4-flash",
+    suggestedModel: "deepseek-v4-flash",
     defaultCapabilities: ["llm"],
     description: "DeepSeek 官方 API。v4 模型由后端注入 DeepSeek 专用 thinking 控制。",
   },
@@ -105,7 +107,7 @@ export const MODEL_PROVIDER_MANIFESTS: Record<ModelProvider, ModelProviderManife
     protocol: "openai_compatible",
     selectableProtocol: false,
     apiKeyRequired: true,
-    defaultModel: "kimi-k2.6",
+    suggestedModel: "kimi-k2.6",
     defaultCapabilities: ["llm"],
     description: "月之暗面 Kimi 官方 API，使用 Moonshot API Key。",
   },
@@ -116,7 +118,7 @@ export const MODEL_PROVIDER_MANIFESTS: Record<ModelProvider, ModelProviderManife
     protocol: "anthropic_messages",
     selectableProtocol: false,
     apiKeyRequired: true,
-    defaultModel: "claude-sonnet-4-5-20250929",
+    suggestedModel: "claude-sonnet-4-5-20250929",
     defaultCapabilities: ["llm", "vision"],
     description: "Anthropic 官方 Messages API，后端按 Anthropic 原生消息格式调用。",
   },
@@ -127,7 +129,7 @@ export const MODEL_PROVIDER_MANIFESTS: Record<ModelProvider, ModelProviderManife
     protocol: "openai_compatible",
     selectableProtocol: false,
     apiKeyRequired: false,
-    defaultModel: "llama3.1",
+    suggestedModel: "llama3.1",
     defaultCapabilities: ["llm"],
     description: "本地 Ollama /v1 接口，通常不需要 API Key。",
   },
@@ -138,7 +140,7 @@ export const MODEL_PROVIDER_MANIFESTS: Record<ModelProvider, ModelProviderManife
     protocol: "openai_compatible",
     selectableProtocol: true,
     apiKeyRequired: false,
-    defaultModel: "",
+    suggestedModel: "",
     defaultCapabilities: ["llm"],
     description: "自定义服务只在这里选择 API 模式。",
   },
@@ -228,10 +230,7 @@ export async function completeWithProvider(
 ): Promise<string> {
   if (!model?.endpoint) return fallback
   try {
-    if (model.protocol === "anthropic_messages") {
-      return await completeAnthropic(model, messages, fallback, maxTokens)
-    }
-    return await completeOpenAiCompatible(model, messages, fallback, maxTokens)
+    return await completeStrict(model, messages, fallback, maxTokens)
   } catch (err) {
     return `${fallback}\n\n> LLM fallback used because provider call failed: ${err instanceof Error ? err.message : String(err)}`
   }
@@ -240,19 +239,43 @@ export async function completeWithProvider(
 export async function embedWithProvider(model: RuntimeModelConfig | undefined, text: string): Promise<number[] | undefined> {
   if (!model?.endpoint || model.protocol !== "openai_compatible") return undefined
   try {
-    const response = await fetch(openAiEmbeddingUrl(model), {
-      method: "POST",
-      headers: openAiHeaders(model),
-      body: JSON.stringify({
-        model: model.model,
-        input: text.slice(0, 8000),
-      }),
-    })
-    if (!response.ok) throw new Error(await response.text())
-    const json = (await response.json()) as EmbeddingResponse
-    return json.data?.[0]?.embedding
+    return await embedOpenAiCompatible(model, text)
   } catch {
     return undefined
+  }
+}
+
+export async function validateRuntimeModelCapabilities(model: RuntimeModelConfig, capabilities: ModelCapability[]): Promise<void> {
+  if (capabilities.length < 1 || capabilities.length > 2) {
+    throw new Error("模型能力必须选择 1 到 2 项")
+  }
+  if (!model.endpoint) throw new Error("Base URL is required")
+  if (providerManifest(model.provider).apiKeyRequired && !model.apiKey) {
+    throw new Error(`${providerManifest(model.provider).label} requires an API Key`)
+  }
+
+  if (capabilities.includes("llm")) {
+    try {
+      const answer = await withValidationTimeout(
+        completeStrict(model, [{ role: "user", content: "你好" }], "", 80),
+        "LLM 校验超时",
+      )
+      if (!answer.trim()) throw new Error("没有返回内容")
+    } catch (err) {
+      throw new Error(`LLM 校验失败：${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  if (capabilities.includes("embedding")) {
+    try {
+      if (model.protocol !== "openai_compatible") throw new Error("Embedding 只支持 OpenAI-compatible 协议")
+      const vector = await withValidationTimeout(embedOpenAiCompatible(model, "你好"), "Embedding 校验超时")
+      if (vector.length === 0 || vector.some((value) => !Number.isFinite(value))) {
+        throw new Error("返回的向量为空或包含非数字")
+      }
+    } catch (err) {
+      throw new Error(`Embedding 校验失败：${err instanceof Error ? err.message : String(err)}`)
+    }
   }
 }
 
@@ -262,7 +285,7 @@ export async function testModelProvider(input: ModelProviderTestInput): Promise<
     protocol: input.protocol,
     endpoint: input.endpoint,
     apiKey: input.apiKey,
-    model: input.model?.trim() || providerManifest(normalizeProvider(input.provider)).defaultModel || "test-model",
+    model: input.model?.trim() || providerManifest(normalizeProvider(input.provider)).suggestedModel || "test-model",
   })
   if (!model.endpoint) throw new Error("Base URL is required")
   if (providerManifest(model.provider).apiKeyRequired && !model.apiKey) {
@@ -271,7 +294,6 @@ export async function testModelProvider(input: ModelProviderTestInput): Promise<
 
   const models = await listProviderModels(model)
   const selectedModelAvailable = model.model ? models.includes(model.model) : undefined
-  const shown = models.slice(0, 12)
   return {
     ok: true,
     provider: model.provider,
@@ -279,12 +301,24 @@ export async function testModelProvider(input: ModelProviderTestInput): Promise<
     endpoint: model.endpoint,
     checked: "models",
     modelCount: models.length,
-    models: shown,
+    models,
     selectedModelAvailable,
     message: selectedModelAvailable === false
       ? `连接成功，发现 ${models.length} 个模型，但当前模型名未出现在列表中。`
       : `连接成功，发现 ${models.length} 个模型。`,
   }
+}
+
+async function completeStrict(
+  model: RuntimeModelConfig,
+  messages: ModelMessage[],
+  fallback: string,
+  maxTokens: number,
+): Promise<string> {
+  if (model.protocol === "anthropic_messages") {
+    return completeAnthropic(model, messages, fallback, maxTokens)
+  }
+  return completeOpenAiCompatible(model, messages, fallback, maxTokens)
 }
 
 async function completeOpenAiCompatible(
@@ -329,6 +363,36 @@ async function completeAnthropic(
   return json.content?.map((item) => item.text ?? "").join("").trim() || fallback
 }
 
+async function embedOpenAiCompatible(model: RuntimeModelConfig, text: string): Promise<number[]> {
+  const response = await fetch(openAiEmbeddingUrl(model), {
+    method: "POST",
+    headers: openAiHeaders(model),
+    body: JSON.stringify({
+      model: model.model,
+      input: text.slice(0, 8000),
+    }),
+  })
+  if (!response.ok) throw new Error(`Embedding HTTP ${response.status}: ${await compactResponseText(response)}`)
+  const json = (await response.json()) as EmbeddingResponse
+  const vector = json.data?.[0]?.embedding
+  if (!vector) throw new Error("Embedding response did not include a vector")
+  return vector
+}
+
+async function withValidationTimeout<T>(work: Promise<T>, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      work,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), MODEL_SAVE_VALIDATION_TIMEOUT_MS)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 async function listProviderModels(model: RuntimeModelConfig): Promise<string[]> {
   if (model.protocol === "anthropic_messages") {
     return listModelsFromUrl(anthropicModelsUrl(model), anthropicHeaders(model), model)
@@ -342,6 +406,77 @@ async function listProviderModels(model: RuntimeModelConfig): Promise<string[]> 
 }
 
 async function listModelsFromUrl(url: string, headers: Record<string, string>, model: RuntimeModelConfig): Promise<string[]> {
+  if (model.protocol === "anthropic_messages") {
+    return listAnthropicModelsFromUrl(url, headers, model)
+  }
+  return fetchModelsListOnce(url, headers, model)
+}
+
+/** Anthropic GET /v1/models：仅使用文档中的 limit + after_id 分页。 */
+const ANTHROPIC_MODELS_PAGE_LIMIT = 999
+
+async function listAnthropicModelsFromUrl(url: string, headers: Record<string, string>, model: RuntimeModelConfig): Promise<string[]> {
+  const collected: string[] = []
+  const visitedUrls = new Set<string>()
+  let nextUrl: string | null = withAnthropicModelsLimit(url)
+  let lastPageFirstId: string | undefined
+
+  for (let page = 0; page < 100 && nextUrl; page++) {
+    if (visitedUrls.has(nextUrl)) break
+    visitedUrls.add(nextUrl)
+
+    const json = await fetchModelsListJson(nextUrl, headers, model)
+    const pageModels = parseModelList(json)
+    if (pageModels.length > 0 && pageModels[0] === lastPageFirstId) break
+    if (pageModels.length > 0) lastPageFirstId = pageModels[0]
+    if (pageModels.length === 0) break
+
+    collected.push(...pageModels)
+    if (!isRecord(json) || json.has_more !== true) break
+
+    const lastId = typeof json.last_id === "string" ? json.last_id : pageModels[pageModels.length - 1]
+    nextUrl = lastId ? anthropicModelsNextUrl(nextUrl, lastId) : null
+  }
+
+  const models = [...new Set(collected)].sort((a, b) => a.localeCompare(b))
+  if (models.length === 0) throw new Error(`${providerManifest(model.provider).label} returned an empty model list`)
+  return models
+}
+
+function withAnthropicModelsLimit(url: string): string {
+  try {
+    const parsed = new URL(url)
+    if (!parsed.searchParams.has("limit")) {
+      parsed.searchParams.set("limit", String(ANTHROPIC_MODELS_PAGE_LIMIT))
+    }
+    return parsed.toString()
+  } catch {
+    return url
+  }
+}
+
+function anthropicModelsNextUrl(currentUrl: string, lastId: string): string | null {
+  try {
+    const parsed = new URL(currentUrl)
+    if (parsed.searchParams.get("after_id") === lastId) return null
+    parsed.searchParams.set("after_id", lastId)
+    if (!parsed.searchParams.has("limit")) {
+      parsed.searchParams.set("limit", String(ANTHROPIC_MODELS_PAGE_LIMIT))
+    }
+    return parsed.toString()
+  } catch {
+    return null
+  }
+}
+
+async function fetchModelsListOnce(url: string, headers: Record<string, string>, model: RuntimeModelConfig): Promise<string[]> {
+  const json = await fetchModelsListJson(url, headers, model)
+  const models = parseModelList(json)
+  if (models.length === 0) throw new Error(`${providerManifest(model.provider).label} returned an empty model list`)
+  return models
+}
+
+async function fetchModelsListJson(url: string, headers: Record<string, string>, model: RuntimeModelConfig): Promise<unknown> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 15000)
   try {
@@ -351,10 +486,7 @@ async function listModelsFromUrl(url: string, headers: Record<string, string>, m
       signal: controller.signal,
     })
     if (!response.ok) throw new Error(`${providerManifest(model.provider).label} models HTTP ${response.status}: ${await compactResponseText(response)}`)
-    const json = await response.json()
-    const models = parseModelList(json)
-    if (models.length === 0) throw new Error(`${providerManifest(model.provider).label} returned an empty model list`)
-    return models
+    return await response.json()
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") {
       throw new Error(`${providerManifest(model.provider).label} model list request timed out`)
@@ -507,24 +639,38 @@ function requiresBearerAuth(url: string): boolean {
 }
 
 function parseModelList(value: unknown): string[] {
-  const items = Array.isArray(value)
-    ? value
-    : isRecord(value) && Array.isArray(value.data)
-      ? value.data
-      : isRecord(value) && Array.isArray(value.models)
-        ? value.models
-        : []
-  const ids = items
-    .map((item) => {
-      if (typeof item === "string") return item
-      if (!isRecord(item)) return undefined
-      if (typeof item.id === "string") return item.id
-      if (typeof item.name === "string") return item.name
-      if (typeof item.model === "string") return item.model
-      return undefined
-    })
-    .filter((item): item is string => Boolean(item))
-  return [...new Set(ids)].sort((a, b) => a.localeCompare(b))
+  if (Array.isArray(value)) return dedupeModelIds(value.map(extractModelId))
+  if (!isRecord(value)) return []
+
+  if (isRecord(value.data)) {
+    const nested = parseModelList(value.data)
+    if (nested.length > 0) return nested
+  }
+
+  const items = Array.isArray(value.data)
+    ? value.data
+    : Array.isArray(value.models)
+      ? value.models
+      : Array.isArray(value.list)
+        ? value.list
+        : isRecord(value.data) && Array.isArray(value.data.models)
+          ? value.data.models
+          : []
+
+  return dedupeModelIds(items.map(extractModelId))
+}
+
+function extractModelId(item: unknown): string | undefined {
+  if (typeof item === "string") return item
+  if (!isRecord(item)) return undefined
+  if (typeof item.id === "string") return item.id
+  if (typeof item.name === "string") return item.name
+  if (typeof item.model === "string") return item.model
+  return undefined
+}
+
+function dedupeModelIds(ids: Array<string | undefined>): string[] {
+  return [...new Set(ids.filter((item): item is string => Boolean(item)))].sort((a, b) => a.localeCompare(b))
 }
 
 function isRecord(value: unknown): value is JsonRecord {

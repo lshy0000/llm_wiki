@@ -8,6 +8,7 @@ import {
   Building2,
   ChevronUp,
   ClipboardList,
+  KeyRound,
   LibraryBig,
   LogOut,
   Moon,
@@ -17,7 +18,7 @@ import {
 } from "lucide-react"
 import type { AuthPayload } from "@/web/types"
 
-type ActivePage = "home" | "database" | "detail" | "extensions" | "companySettings"
+type ActivePage = "home" | "database" | "detail" | "extensions" | "companySettings" | "apiKeys"
 
 export function AppShell({
   auth,
@@ -94,6 +95,7 @@ export function AppShell({
                 auth={auth}
                 isAdmin={isAdmin}
                 onDocs={() => setUserOpen(false)}
+                onApiKeys={() => { setUserOpen(false); onNavigate("/account/api-keys") }}
                 onCompanySettings={() => { setUserOpen(false); onNavigate("/company-settings") }}
                 onLogout={() => { setUserOpen(false); onLogout() }}
               />
@@ -127,12 +129,14 @@ function UserMenu({
   auth,
   isAdmin,
   onDocs,
+  onApiKeys,
   onCompanySettings,
   onLogout,
 }: {
   auth: AuthPayload
   isAdmin: boolean
   onDocs: () => void
+  onApiKeys: () => void
   onCompanySettings: () => void
   onLogout: () => void
 }) {
@@ -156,6 +160,9 @@ function UserMenu({
       <div className="border-t border-neutral-100 py-1">
         <MenuButton icon={<BookOpen className="h-4 w-4" />} label="文档中心" onClick={onDocs} />
         <MenuButton icon={<Moon className="h-4 w-4" />} label="切换到深色模式 (Beta)" onClick={onDocs} />
+      </div>
+      <div className="border-t border-neutral-100 py-1">
+        <MenuButton icon={<KeyRound className="h-4 w-4" />} label="API Key" onClick={onApiKeys} />
       </div>
       {isAdmin && (
         <div className="border-t border-neutral-100 py-1">
