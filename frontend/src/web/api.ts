@@ -1,7 +1,9 @@
 import type {
   AuthPayload,
   Capabilities,
+  ChatResponse,
   CompanyModel,
+  CustomHttpToolConfig,
   FileTreeNode,
   GraphResponse,
   IngestJob,
@@ -12,6 +14,9 @@ import type {
   SearchResponse,
   SourceDocument,
   SourceUploadResponse,
+  ToolDefinition,
+  ToolConfigResponse,
+  ToolRunResponse,
   UserApiKey,
   UserApiKeyCreated,
   WikiPage,
@@ -161,15 +166,37 @@ export const api = {
   fileTree: (kbId: string, root: "raw" | "wiki") => request<FileTreeNode[]>(`/api/kbs/${kbId}/files?root=${root}`),
   wikiTree: (kbId: string) => request<WikiTreeGroup[]>(`/api/kbs/${kbId}/wiki/tree`),
   wikiPage: (kbId: string, pageId: string) => request<WikiPage>(`/api/kbs/${kbId}/wiki/pages/${pageId}`),
-  search: (kbId: string, query: string) =>
+  search: (kbId: string, query: string, input?: { topK?: number; queryEmbedding?: number[] }) =>
     request<SearchResponse>(`/api/kbs/${kbId}/search`, {
       method: "POST",
-      body: JSON.stringify({ query }),
+      body: JSON.stringify({ query, topK: input?.topK, queryEmbedding: input?.queryEmbedding }),
     }),
+  listTools: () => request<ToolDefinition[]>("/api/tools"),
+  toolConfig: () => request<ToolConfigResponse>("/api/tools/config"),
+  saveCustomTool: (tool: CustomHttpToolConfig) =>
+    request<CustomHttpToolConfig>("/api/tools/custom", {
+      method: "POST",
+      body: JSON.stringify(tool),
+    }),
+  deleteCustomTool: (toolName: string) =>
+    request<{ ok: true }>(`/api/tools/custom/${encodeURIComponent(toolName)}`, { method: "DELETE" }),
+  runTool: (toolName: string, args?: Record<string, unknown>) =>
+    request<ToolRunResponse>(`/api/tools/${encodeURIComponent(toolName)}/run`, {
+      method: "POST",
+      body: JSON.stringify({ arguments: args ?? {} }),
+    }),
+  listKbTools: (kbId: string) => request<ToolDefinition[]>(`/api/kbs/${kbId}/tools`),
+  runKbTool: (kbId: string, toolName: string, args?: Record<string, unknown>) =>
+    request<ToolRunResponse>(`/api/kbs/${kbId}/tools/${encodeURIComponent(toolName)}/run`, {
+      method: "POST",
+      body: JSON.stringify({ arguments: args ?? {} }),
+    }),
+  reindexRetrieval: (kbId: string) =>
+    request<{ ok: boolean }>(`/api/kbs/${kbId}/retrieval/reindex`, { method: "POST" }),
   graph: (kbId: string) => request<GraphResponse>(`/api/kbs/${kbId}/graph`),
   graphInsights: (kbId: string) => request<ReviewItem[]>(`/api/kbs/${kbId}/graph/insights`, { method: "POST" }),
   chat: (kbId: string, question: string, conversationId?: string) =>
-    request<{ conversationId: string; answer: string; citations: SearchResponse["results"] }>(`/api/kbs/${kbId}/chat`, {
+    request<ChatResponse>(`/api/kbs/${kbId}/chat`, {
       method: "POST",
       body: JSON.stringify({ question, conversationId }),
     }),

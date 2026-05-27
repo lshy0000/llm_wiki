@@ -204,20 +204,127 @@ export interface WikiPage {
 
 export interface SearchResult {
   pageId: string
+  chunkId?: string
+  chunkOrdinal?: number
   path: string
   title: string
   snippet: string
   score: number
   keywordScore: number
+  graphScore?: number
   vectorScore?: number
   titleMatch: boolean
   sources: string[]
   images: ImageAsset[]
+  signals?: Record<string, number>
+  reasons?: string[]
+  graphPaths?: Array<{
+    nodes: Array<{ id: string; kind: string; label: string }>
+    rels: Array<{ type: string; weight?: number }>
+  }>
 }
 
 export interface SearchResponse {
-  mode: "keyword" | "vector" | "hybrid"
+  mode: "keyword" | "vector" | "hybrid" | "graph" | "graph-hybrid"
   results: SearchResult[]
+  diagnostics?: {
+    seeds: number
+    graphHits: number
+    lexicalHits: number
+    vectorHits: number
+    graphBackend: "neo4j" | "postgres" | "none"
+    llmUsed: false
+  }
+}
+
+export type ToolScope = "global" | "knowledge_base"
+export type ToolCategory = "knowledge" | "retrieval" | "storage" | "external"
+export type ToolJsonType = "string" | "number" | "integer" | "boolean" | "array" | "object"
+export type ToolSource = "builtin" | "custom"
+
+export interface ToolParameterProperty {
+  type: ToolJsonType
+  description?: string
+  enum?: string[]
+  default?: unknown
+  minimum?: number
+  maximum?: number
+  items?: ToolParameterProperty
+}
+
+export interface ToolDefinition {
+  name: string
+  displayName: string
+  description: string
+  category: ToolCategory
+  scope: ToolScope
+  readOnly: boolean
+  source: ToolSource
+  enabled: boolean
+  agentEnabled: boolean
+  triggers?: string[]
+  parameters: {
+    type: "object"
+    properties: Record<string, ToolParameterProperty>
+    required?: string[]
+    additionalProperties?: boolean
+  }
+}
+
+export interface CustomHttpToolConfig {
+  name: string
+  displayName: string
+  description: string
+  category: ToolCategory
+  scope: ToolScope
+  readOnly: boolean
+  enabled: boolean
+  agentEnabled: boolean
+  triggers?: string[]
+  parameters: ToolDefinition["parameters"]
+  http: {
+    url: string
+    method?: "GET" | "POST"
+    headers?: Record<string, string>
+    timeoutMs?: number
+  }
+}
+
+export interface ToolConfigResponse {
+  customTools: CustomHttpToolConfig[]
+  definitions: ToolDefinition[]
+}
+
+export interface ToolRunResponse<T = unknown> {
+  tool: string
+  ok: true
+  result: T
+}
+
+export type AgentTraceType = "plan" | "tool" | "observation" | "answer"
+
+export interface AgentTraceStep {
+  id: string
+  type: AgentTraceType
+  title: string
+  detail: string
+  toolName?: string
+  latencyMs?: number
+  input?: unknown
+  outputSummary?: unknown
+}
+
+export interface ChatCitation {
+  pageId: string
+  title: string
+  path: string
+}
+
+export interface ChatResponse {
+  conversationId: string
+  answer: string
+  citations: ChatCitation[]
+  trace: AgentTraceStep[]
 }
 
 export interface GraphResponse {

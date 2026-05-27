@@ -222,15 +222,33 @@ export interface ChatMessage {
 
 export interface SearchResult {
   pageId: string
+  chunkId?: string
+  chunkOrdinal?: number
   path: string
   title: string
   snippet: string
   score: number
   keywordScore: number
+  graphScore?: number
   vectorScore?: number
   titleMatch: boolean
   sources: string[]
   images: ImageAsset[]
+  signals?: Record<string, number>
+  reasons?: string[]
+  graphPaths?: Array<{
+    nodes: Array<{ id: string; kind: string; label: string }>
+    rels: Array<{ type: string; weight?: number }>
+  }>
+}
+
+export interface SearchDiagnostics {
+  seeds: number
+  graphHits: number
+  lexicalHits: number
+  vectorHits: number
+  graphBackend: "neo4j" | "postgres" | "none"
+  llmUsed: false
 }
 
 export interface GraphNode {

@@ -6,9 +6,10 @@ import pino from "pino"
 import multipart from "@fastify/multipart"
 import Fastify from "fastify"
 import type { FastifyReply, FastifyRequest } from "fastify"
+import { AgentService } from "./agent-service.js"
 import { AuthService, extractBearerToken } from "./auth-service.js"
-import { ChatService } from "./chat-service.js"
 import { DocumentParser } from "./document-parser.js"
+import { buildGraphIndexSnapshot, createGraphIndexFromEnv, syncAllGraphIndexes, syncGraphIndexForKnowledgeBase, type GraphIndex } from "./graph-index-service.js"
 import { GraphService } from "./graph-service.js"
 import { IngestService } from "./ingest-service.js"
 import { PostgresRepository } from "./repository.js"
@@ -24,11 +25,14 @@ import {
   validateRuntimeModelCapabilities,
 } from "./model-providers.js"
 import { ProjectService } from "./project-service.js"
+import { RetrievalService } from "./retrieval-service.js"
 import { ResearchService } from "./research-service.js"
 import { SearchService } from "./search-service.js"
 import { SourceWatchService } from "./source-watch-service.js"
 import { SourceService, type SourceSaveResult } from "./source-service.js"
 import { LocalStorageProvider } from "./storage.js"
+import { ToolConfigService, type CustomHttpToolConfig } from "./tool-config-service.js"
+import { ToolError, ToolService } from "./tool-service.js"
 import type { AuthContext, CompanyModel, KnowledgeBase, ReviewStatus } from "./types.js"
 import { id, normalizeStorageKey, nowIso, objectContentTypeForFile } from "./wiki-utils.js"
 
@@ -41,11 +45,15 @@ export interface AppServices {
   ingest: IngestService
   search: SearchService
   graph: GraphService
-  chat: ChatService
+  graphIndex: GraphIndex
   lint: LintService
   research: ResearchService
   sourceWatch: SourceWatchService
   llm: LlmGateway
+  retrieval: RetrievalService
+  tools: ToolService
+  toolConfig: ToolConfigService
+  agent: AgentService
 }
 
 function createLogger(): pino.Logger {
@@ -93,22 +101,29 @@ export async function buildApp(dataDir = path.resolve(process.cwd(), ".kn-data")
   await repo.ensureDefaultCompany()
   const storage = new LocalStorageProvider(path.join(dataDir, "database"))
   const llm = new LlmGateway(repo)
+  const graphIndex = createGraphIndexFromEnv(app.log)
+  await graphIndex.ensureReady()
   const auth = new AuthService(repo)
   await auth.ensureBuiltInAccounts()
   const project = new ProjectService(repo, storage)
   const source = new SourceService(repo, storage)
-  const ingest = new IngestService(repo, storage, new DocumentParser(), llm)
-  const search = new SearchService(repo, llm)
+  const ingest = new IngestService(repo, storage, new DocumentParser(), llm, graphIndex)
+  const retrieval = new RetrievalService(repo, graphIndex)
+  const search = new SearchService(retrieval)
   const graph = new GraphService(repo)
-  const chat = new ChatService(repo, search, graph, llm)
   const lint = new LintService(repo)
   const research = new ResearchService(repo, source, llm)
   const sourceWatch = new SourceWatchService(repo, storage, source, () => ingest.processQueue())
   sourceWatch.start()
-  const services: AppServices = { repo, auth, storage, project, source, ingest, search, graph, chat, lint, research, sourceWatch, llm }
+  const toolConfig = new ToolConfigService(path.join(dataDir, "config", "tools.json"))
+  const toolConfigState = await toolConfig.init()
+  const tools = new ToolService({ project, retrieval, graph, storage }, toolConfigState)
+  const agent = new AgentService(repo, llm, tools)
+  const services: AppServices = { repo, auth, storage, project, source, ingest, search, graph, graphIndex, lint, research, sourceWatch, llm, retrieval, tools, toolConfig, agent }
 
   registerRoutes(app, services)
   setTimeout(() => void ingest.recoverAndStart(), 0)
+  setTimeout(() => void syncAllGraphIndexes(repo, graphIndex, app.log), 0)
   return { app, services }
 }
 
@@ -193,6 +208,58 @@ function registerRoutes(app: AppInstance, services: AppServices): void {
         searxng: Boolean(process.env.SEARXNG_URL),
         serpApi: Boolean(process.env.SERPAPI_API_KEY),
       },
+    }
+  })
+
+  app.get("/api/tools", async (request, reply) => {
+    const auth = await requireAuth(request, reply, services)
+    if (!auth) return
+    return services.tools.listDefinitions({ kbScoped: true })
+  })
+
+  app.get("/api/tools/config", async (request, reply) => {
+    const auth = await requireAuth(request, reply, services)
+    if (!auth) return
+    if (!isCompanyAdmin(auth)) return reply.code(403).send({ error: "Company admin is required" })
+    return {
+      customTools: services.toolConfig.snapshot().customTools,
+      definitions: services.tools.listDefinitions({ kbScoped: true, includeDisabled: true }),
+    }
+  })
+
+  app.post<{ Body: Partial<CustomHttpToolConfig> }>("/api/tools/custom", async (request, reply) => {
+    const auth = await requireAuth(request, reply, services)
+    if (!auth) return
+    if (!isCompanyAdmin(auth)) return reply.code(403).send({ error: "Company admin is required" })
+    if (request.body?.name && services.tools.getDefinition(request.body.name)?.source === "builtin") {
+      return reply.code(409).send({ error: "Cannot override a built-in tool" })
+    }
+    try {
+      const tool = await services.toolConfig.saveCustomTool(request.body)
+      services.tools.applyConfig(services.toolConfig.snapshot())
+      return tool
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) })
+    }
+  })
+
+  app.delete<{ Params: { toolName: string } }>("/api/tools/custom/:toolName", async (request, reply) => {
+    const auth = await requireAuth(request, reply, services)
+    if (!auth) return
+    if (!isCompanyAdmin(auth)) return reply.code(403).send({ error: "Company admin is required" })
+    const deleted = await services.toolConfig.deleteCustomTool(request.params.toolName)
+    services.tools.applyConfig(services.toolConfig.snapshot())
+    if (!deleted) return reply.code(404).send({ error: "Custom tool not found" })
+    return { ok: true }
+  })
+
+  app.post<{ Params: { toolName: string }; Body: { arguments?: unknown } }>("/api/tools/:toolName/run", async (request, reply) => {
+    const auth = await requireAuth(request, reply, services)
+    if (!auth) return
+    try {
+      return await services.tools.run(request.params.toolName, { auth }, toolArgs(request.body))
+    } catch (err) {
+      return sendToolError(reply, err)
     }
   })
 
@@ -338,7 +405,7 @@ function registerRoutes(app: AppInstance, services: AppServices): void {
     if (!name) return reply.code(400).send({ error: "name is required" })
     const visibility = request.body.visibility === "creator_only" ? "creator_only" : "company"
     try {
-      return await services.project.createKnowledgeBase({
+      const kb = await services.project.createKnowledgeBase({
         companyId: auth.company.id,
         createdBy: auth.identity.id,
         name,
@@ -346,6 +413,8 @@ function registerRoutes(app: AppInstance, services: AppServices): void {
         visibility,
         embeddingModelId: request.body.embeddingModelId?.trim() || undefined,
       })
+      await syncGraphIndexForRoute(services, kb.id)
+      return kb
     } catch (err) {
       return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) })
     }
@@ -370,6 +439,24 @@ function registerRoutes(app: AppInstance, services: AppServices): void {
     if (!auth) return
     return getCompanyKnowledgeBase(services, auth, request.params.kbId, reply)
   })
+
+  app.get<{ Params: { kbId: string } }>("/api/kbs/:kbId/tools", async (request, reply) => {
+    const auth = await requireAuth(request, reply, services)
+    if (!auth || !(await getCompanyKnowledgeBase(services, auth, request.params.kbId, reply))) return
+    return services.tools.listDefinitions({ kbScoped: true })
+  })
+
+  app.post<{ Params: { kbId: string; toolName: string }; Body: { arguments?: unknown } }>("/api/kbs/:kbId/tools/:toolName/run", async (request, reply) => {
+    const auth = await requireAuth(request, reply, services)
+    const kb = auth ? await getCompanyKnowledgeBase(services, auth, request.params.kbId, reply) : undefined
+    if (!auth || !kb) return
+    try {
+      return await services.tools.run(request.params.toolName, { auth, kb }, toolArgs(request.body))
+    } catch (err) {
+      return sendToolError(reply, err)
+    }
+  })
+
   app.delete<{ Params: { kbId: string } }>("/api/kbs/:kbId", async (request, reply) => {
     const auth = await requireAuth(request, reply, services)
     if (!auth) return
@@ -379,6 +466,7 @@ function registerRoutes(app: AppInstance, services: AppServices): void {
       return reply.code(404).send({ error: "Knowledge base not found" })
     }
     await services.project.deleteKnowledgeBase(kb.id)
+    await services.graphIndex.deleteKnowledgeBase(kb.id)
     return { ok: true }
   })
 
@@ -501,11 +589,22 @@ function registerRoutes(app: AppInstance, services: AppServices): void {
     return page
   })
 
-  app.post<{ Params: { kbId: string }; Body: { query?: string; topK?: number } }>("/api/kbs/:kbId/search", async (request, reply) => {
+  app.post<{ Params: { kbId: string }; Body: { query?: string; topK?: number; queryEmbedding?: number[] } }>("/api/kbs/:kbId/search", async (request, reply) => {
     const auth = await requireAuth(request, reply, services)
     if (!auth || !(await getCompanyKnowledgeBase(services, auth, request.params.kbId, reply))) return
     if (!request.body.query?.trim()) return reply.code(400).send({ error: "query is required" })
-    return services.search.search(request.params.kbId, request.body.query, request.body.topK ?? 20)
+    return services.search.search(request.params.kbId, request.body.query, request.body.topK ?? 20, {
+      queryEmbedding: request.body.queryEmbedding,
+    })
+  })
+
+  app.post<{ Params: { kbId: string } }>("/api/kbs/:kbId/retrieval/reindex", async (request, reply) => {
+    const auth = await requireAuth(request, reply, services)
+    if (!auth || !(await getCompanyKnowledgeBase(services, auth, request.params.kbId, reply))) return
+    if (!isCompanyAdmin(auth)) return reply.code(403).send({ error: "Company admin is required" })
+    if (!services.graphIndex.enabled) return reply.code(400).send({ error: "Neo4j graph index is not configured" })
+    const synced = await services.graphIndex.syncKnowledgeBase(await buildGraphIndexSnapshot(services.repo, request.params.kbId))
+    return { ok: synced }
   })
 
   app.get<{ Params: { kbId: string } }>("/api/kbs/:kbId/graph", async (request, reply) => {
@@ -521,13 +620,19 @@ function registerRoutes(app: AppInstance, services: AppServices): void {
 
   app.post<{ Params: { kbId: string }; Body: { question?: string; conversationId?: string } }>("/api/kbs/:kbId/chat", async (request, reply) => {
     const auth = await requireAuth(request, reply, services)
-    if (!auth || !(await getCompanyKnowledgeBase(services, auth, request.params.kbId, reply))) return
+    const kb = auth ? await getCompanyKnowledgeBase(services, auth, request.params.kbId, reply) : undefined
+    if (!auth || !kb) return
     if (!request.body.question?.trim()) return reply.code(400).send({ error: "question is required" })
-    return services.chat.ask({
-      kbId: request.params.kbId,
-      conversationId: request.body.conversationId,
-      question: request.body.question,
-    })
+    try {
+      return await services.agent.ask({
+        auth,
+        kb,
+        question: request.body.question,
+        conversationId: request.body.conversationId,
+      })
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) })
+    }
   })
 
   app.post<{ Params: { kbId: string } }>("/api/kbs/:kbId/lint", async (request, reply) => {
@@ -641,6 +746,15 @@ function tokenFromRequest(request: FastifyRequest): string | undefined {
   return extractBearerToken(request.headers.authorization) ?? query?.access_token
 }
 
+function toolArgs(body: { arguments?: unknown } | undefined): unknown {
+  return body?.arguments ?? {}
+}
+
+function sendToolError(reply: FastifyReply, err: unknown): FastifyReply {
+  if (err instanceof ToolError) return reply.code(err.statusCode).send({ error: err.message })
+  return reply.code(500).send({ error: err instanceof Error ? err.message : String(err) })
+}
+
 function isCompanyAdmin(auth: AuthContext): boolean {
   return isPlatformAdmin(auth) || auth.member.role === "org_admin"
 }
@@ -652,6 +766,10 @@ function isPlatformAdmin(auth: AuthContext): boolean {
 function sanitizeCompanyModel(model: CompanyModel): Omit<CompanyModel, "apiKey"> & { apiKeySet: boolean } {
   const { apiKey, ...rest } = model
   return { ...rest, apiKeySet: Boolean(apiKey) }
+}
+
+async function syncGraphIndexForRoute(services: AppServices, kbId: string): Promise<void> {
+  await syncGraphIndexForKnowledgeBase(services.repo, services.graphIndex, kbId)
 }
 
 function normalizeModelCapabilities(capabilities?: string[]): CompanyModel["capabilities"] {

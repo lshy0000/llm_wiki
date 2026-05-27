@@ -1,6 +1,7 @@
 import type { EvidenceBlock, ImageAsset, IngestJob, PageChunk, ParsedDocument, ReviewItem, WikiLink, WikiPage } from "./types.js"
 import { DocumentParser } from "./document-parser.js"
 import { makeEvidenceBlock, renderEvidenceMarkdown } from "./evidence.js"
+import { syncGraphIndexForKnowledgeBase, type GraphIndex } from "./graph-index-service.js"
 import { LlmGateway } from "./llm-gateway.js"
 import type { KnowledgeRepository } from "./repository.js"
 import type { StorageProvider } from "./storage.js"
@@ -30,6 +31,7 @@ export class IngestService {
     private readonly storage: StorageProvider,
     private readonly parser: DocumentParser,
     private readonly llm: LlmGateway,
+    private readonly graphIndex?: GraphIndex,
   ) {}
 
   async recoverAndStart(): Promise<void> {
@@ -246,6 +248,7 @@ export class IngestService {
       }
 
       await this.rebuildIndexPage(job.kbId)
+      if (this.graphIndex) await syncGraphIndexForKnowledgeBase(this.repo, this.graphIndex, job.kbId)
       await this.repo.setIngestCache(job.kbId, source.id, source.sha256, writtenPageIds)
       await this.repo.saveSource({ ...source, status: "ingested", updatedAt: nowIso(), error: undefined })
       await this.repo.touchKnowledgeBase(job.kbId)

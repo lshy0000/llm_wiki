@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import {
   ArrowLeft,
+  Bot,
   Brain,
   CheckCircle2,
   ChevronUp,
@@ -16,19 +17,26 @@ import {
   Loader2,
   MessageSquare,
   Network,
+  Play,
   RefreshCw,
   RotateCcw,
+  Send,
   Settings,
   Trash2,
   Upload,
+  UserRound,
+  Wrench,
   X,
 } from "lucide-react"
 import { API_BASE, api, getAuthToken } from "@/web/api"
 import {
   KB_TYPE_LABEL,
   sortFileTreeNodes,
+  type AgentTraceStep,
   type Capabilities,
+  type ChatCitation,
   type CompanyModel,
+  type CustomHttpToolConfig,
   type FileTreeNode,
   type GraphResponse,
   type IngestJob,
@@ -36,12 +44,13 @@ import {
   type ReviewItem,
   type SearchResult,
   type SourceDocument,
+  type ToolDefinition,
   type WikiPage,
   type WikiTreeGroup,
 } from "@/web/types"
 import { embeddingModelLabel } from "@/model-provider-presets"
 
-type DetailTab = "sources" | "structure" | "graph" | "recall" | "reviews"
+type DetailTab = "sources" | "structure" | "chat" | "graph" | "recall" | "tools" | "reviews"
 const SOURCES_PANEL_INITIAL_REFRESH_DELAY_MS = 2_000
 const SOURCES_PANEL_MAX_REFRESH_DELAY_MS = 30_000
 
@@ -69,7 +78,7 @@ export function KnowledgeBaseDetail({
   onKbUpdated: (kb: KnowledgeBase) => void
   capabilities: Capabilities | null
 }) {
-  const [tab, setTab] = useState<DetailTab>("graph")
+  const [tab, setTab] = useState<DetailTab>("chat")
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
@@ -133,8 +142,10 @@ export function KnowledgeBaseDetail({
     }
   }
   const detailTabs: Array<{ key: DetailTab; label: string; icon: ReactElement }> = [
+    { key: "chat", label: "聊天", icon: <Bot className="h-4 w-4" /> },
     { key: "graph", label: "知识图谱", icon: <Network className="h-4 w-4" /> },
     { key: "recall", label: "检索测试", icon: <MessageSquare className="h-4 w-4" /> },
+    { key: "tools", label: "工具", icon: <Wrench className="h-4 w-4" /> },
     { key: "reviews", label: "审核研究", icon: <ClipboardList className="h-4 w-4" /> },
   ]
 
@@ -230,8 +241,10 @@ export function KnowledgeBaseDetail({
             </nav>
           </div>
           <div className="min-h-0 flex-1 overflow-hidden bg-white">
+            {tab === "chat" && <AgentChatPanel kbId={kb.id} />}
             {tab === "graph" && <GraphPanel kbId={kb.id} />}
             {tab === "recall" && <RecallPanel kbId={kb.id} />}
+            {tab === "tools" && <ToolsPanel kbId={kb.id} isAdmin={isAdmin} />}
             {tab === "structure" && <StructurePanel kbId={kb.id} />}
             {tab === "reviews" && <ReviewsPanel kbId={kb.id} />}
           </div>
@@ -537,7 +550,8 @@ function TreeNodeView({
   selectedPath?: string
   onOpenFile: (node: FileTreeNode) => void
 }) {
-  const [open, setOpen] = useState(true)
+  // 默认折叠；子节点仅在展开时挂载，避免上万文件时一次性渲染整棵树
+  const [open, setOpen] = useState(false)
   const selected = selectedPath === node.path
   const toggle = () => {
     if (node.isDirectory) setOpen((value) => !value)
@@ -695,6 +709,160 @@ function inferFileKind(name: string): FileSelection["kind"] {
   if (/\.(png|jpg|jpeg|webp|gif|bmp|svg)$/.test(lower)) return "image"
   if (/\.pdf$/.test(lower)) return "pdf"
   return "binary"
+}
+
+type AgentUiMessage = {
+  id: string
+  role: "user" | "assistant"
+  content: string
+  citations?: ChatCitation[]
+  trace?: AgentTraceStep[]
+}
+
+function AgentChatPanel({ kbId }: { kbId: string }) {
+  const [conversationId, setConversationId] = useState<string | undefined>()
+  const [messages, setMessages] = useState<AgentUiMessage[]>([])
+  const [input, setInput] = useState("")
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const send = async () => {
+    const question = input.trim()
+    if (!question || busy) return
+    const userMessage: AgentUiMessage = { id: clientId("user"), role: "user", content: question }
+    setMessages((items) => [...items, userMessage])
+    setInput("")
+    setBusy(true)
+    setError(null)
+    try {
+      const response = await api.chat(kbId, question, conversationId)
+      setConversationId(response.conversationId)
+      setMessages((items) => [
+        ...items,
+        {
+          id: clientId("assistant"),
+          role: "assistant",
+          content: response.answer,
+          citations: response.citations,
+          trace: response.trace,
+        },
+      ])
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)_auto] bg-white">
+      <div className="min-h-0 overflow-auto px-4 py-4">
+        {messages.length === 0 && (
+          <div className="flex h-full items-center justify-center text-center">
+            <div className="max-w-md">
+              <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-lg bg-cyan-50 text-cyan-700">
+                <Bot className="h-5 w-5" />
+              </div>
+              <h2 className="mt-3 text-base font-semibold text-neutral-950">知识库 Agent</h2>
+              <p className="mt-2 text-sm leading-6 text-neutral-600">直接提问。Agent 会自主选择快速召回、图谱概览或读取页面证据。</p>
+            </div>
+          </div>
+        )}
+        <div className="space-y-4">
+          {messages.map((message) => (
+            <article key={message.id} className={`flex gap-3 ${message.role === "user" ? "justify-end" : "justify-start"}`}>
+              {message.role === "assistant" && (
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-cyan-50 text-cyan-700">
+                  <Bot className="h-4 w-4" />
+                </div>
+              )}
+              <div className={`max-w-[78%] rounded-lg border px-4 py-3 ${message.role === "user" ? "border-cyan-200 bg-cyan-50" : "border-neutral-200 bg-white"}`}>
+                {message.role === "assistant" ? <MarkdownView content={message.content} /> : <p className="whitespace-pre-wrap text-sm leading-6 text-neutral-900">{message.content}</p>}
+                {message.citations && message.citations.length > 0 && <CitationList citations={message.citations} />}
+                {message.trace && message.trace.length > 0 && <TraceView trace={message.trace} />}
+              </div>
+              {message.role === "user" && (
+                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-neutral-100 text-neutral-700">
+                  <UserRound className="h-4 w-4" />
+                </div>
+              )}
+            </article>
+          ))}
+          {busy && (
+            <div className="flex items-center gap-2 text-sm text-neutral-500">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Agent 正在选择工具并生成回答
+            </div>
+          )}
+          {error && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
+        </div>
+      </div>
+      <div className="border-t border-neutral-100 p-3">
+        <div className="flex items-end gap-2">
+          <textarea
+            className="max-h-36 min-h-11 flex-1 resize-none rounded-md border border-neutral-200 px-3 py-2 text-sm leading-6 outline-none focus:border-cyan-700"
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault()
+                void send()
+              }
+            }}
+            placeholder="问知识库一个问题"
+            disabled={busy}
+          />
+          <button
+            type="button"
+            className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-md bg-cyan-700 text-white hover:bg-cyan-800 disabled:opacity-60"
+            onClick={() => void send()}
+            disabled={busy || !input.trim()}
+            title="发送"
+          >
+            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+          </button>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function CitationList({ citations }: { citations: ChatCitation[] }) {
+  return (
+    <div className="mt-3 flex flex-wrap gap-2">
+      {citations.map((citation) => (
+        <span key={`${citation.pageId}-${citation.path}`} className="rounded-md border border-neutral-200 bg-neutral-50 px-2 py-1 text-xs text-neutral-700">
+          {citation.title} · {citation.path}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function TraceView({ trace }: { trace: AgentTraceStep[] }) {
+  return (
+    <details className="mt-3 rounded-md border border-neutral-200 bg-neutral-50">
+      <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-neutral-700">思考过程</summary>
+      <div className="space-y-2 border-t border-neutral-200 p-3">
+        {trace.map((step) => (
+          <div key={step.id} className="rounded border border-neutral-200 bg-white p-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-neutral-900">{step.title}</span>
+              <span className="text-[11px] text-neutral-500">{step.type}{step.latencyMs !== undefined ? ` · ${step.latencyMs}ms` : ""}</span>
+            </div>
+            <p className="mt-1 text-xs leading-5 text-neutral-600">{step.detail}</p>
+            {step.outputSummary !== undefined && (
+              <pre className="mt-2 max-h-32 overflow-auto rounded bg-neutral-950 p-2 text-[11px] leading-4 text-neutral-50">{JSON.stringify(step.outputSummary, null, 2)}</pre>
+            )}
+          </div>
+        ))}
+      </div>
+    </details>
+  )
+}
+
+function clientId(prefix: string): string {
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
 function StructurePanel({ kbId }: { kbId: string }) {
@@ -919,6 +1087,298 @@ function RecallPanel({ kbId }: { kbId: string }) {
       )}
     </section>
   )
+}
+
+function ToolsPanel({ kbId, isAdmin }: { kbId: string; isAdmin: boolean }) {
+  const [tools, setTools] = useState<ToolDefinition[]>([])
+  const [selectedName, setSelectedName] = useState("")
+  const [argsText, setArgsText] = useState("{}")
+  const [resultText, setResultText] = useState("")
+  const [customToolText, setCustomToolText] = useState(defaultCustomToolJson())
+  const [customTools, setCustomTools] = useState<CustomHttpToolConfig[]>([])
+  const [loading, setLoading] = useState(true)
+  const [running, setRunning] = useState(false)
+  const [savingCustom, setSavingCustom] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [customError, setCustomError] = useState<string | null>(null)
+
+  const loadTools = async (cancelled?: () => boolean) => {
+    const config = isAdmin ? await api.toolConfig() : undefined
+    const items = config?.definitions ?? await api.listKbTools(kbId)
+    if (cancelled?.()) return
+    if (config) setCustomTools(config.customTools)
+    setTools(items)
+    const first = items.find((item) => item.scope === "knowledge_base" && item.enabled) ?? items.find((item) => item.enabled) ?? items[0]
+    setSelectedName(first?.name ?? "")
+    setArgsText(defaultToolArgs(first))
+    setResultText("")
+    const selectedCustom = config?.customTools[0]
+    setCustomToolText(selectedCustom ? JSON.stringify(selectedCustom, null, 2) : defaultCustomToolJson())
+  }
+
+  useEffect(() => {
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    void loadTools(() => cancelled)
+      .catch((err) => {
+        if (!cancelled) setError(errorMessage(err))
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [kbId, isAdmin])
+
+  const selected = tools.find((tool) => tool.name === selectedName)
+
+  const selectTool = (name: string) => {
+    const tool = tools.find((item) => item.name === name)
+    setSelectedName(name)
+    setArgsText(defaultToolArgs(tool))
+    setResultText("")
+    if (tool?.source === "custom") {
+      setCustomToolText(JSON.stringify(customTools.find((item) => item.name === tool.name) ?? customToolFromDefinition(tool), null, 2))
+    }
+    setError(null)
+  }
+
+  const saveCustomTool = async () => {
+    setSavingCustom(true)
+    setCustomError(null)
+    try {
+      const parsed = JSON.parse(customToolText) as CustomHttpToolConfig
+      await api.saveCustomTool(parsed)
+      await loadTools()
+    } catch (err) {
+      setCustomError(errorMessage(err))
+    } finally {
+      setSavingCustom(false)
+    }
+  }
+
+  const deleteSelectedCustomTool = async () => {
+    if (!selected || selected.source !== "custom") return
+    setSavingCustom(true)
+    setCustomError(null)
+    try {
+      await api.deleteCustomTool(selected.name)
+      await loadTools()
+    } catch (err) {
+      setCustomError(errorMessage(err))
+    } finally {
+      setSavingCustom(false)
+    }
+  }
+
+  const runSelectedTool = async () => {
+    if (!selected) return
+    let args: Record<string, unknown>
+    try {
+      const parsed = JSON.parse(argsText || "{}") as unknown
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("工具参数必须是 JSON object")
+      args = parsed as Record<string, unknown>
+    } catch (err) {
+      setError(errorMessage(err))
+      return
+    }
+    setRunning(true)
+    setError(null)
+    try {
+      const response = await api.runKbTool(kbId, selected.name, args)
+      setResultText(JSON.stringify(response.result, null, 2))
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  const required = new Set(selected?.parameters.required ?? [])
+
+  return (
+    <section className="grid h-full min-h-0 grid-cols-[280px_minmax(0,1fr)] bg-white">
+      <aside className="min-h-0 overflow-auto border-r border-neutral-100">
+        <div className="sticky top-0 z-10 border-b border-neutral-100 bg-white px-4 py-3">
+          <h2 className="text-base font-semibold">工具</h2>
+          <p className="mt-1 text-sm text-neutral-600">只读工具目录和运行结果。</p>
+        </div>
+        <div className="space-y-2 p-3">
+          {loading && <div className="flex items-center gap-2 px-2 py-3 text-sm text-neutral-500"><Loader2 className="h-4 w-4 animate-spin" />加载工具</div>}
+          {!loading && tools.map((tool) => (
+            <button
+              key={tool.name}
+              type="button"
+              className={`block w-full rounded-md border p-3 text-left text-sm transition ${selectedName === tool.name ? "border-cyan-300 bg-cyan-50" : "border-neutral-200 hover:border-cyan-200 hover:bg-cyan-50/40"}`}
+              onClick={() => selectTool(tool.name)}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-medium text-neutral-950">{tool.displayName}</span>
+                <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[11px] text-neutral-600">{tool.source === "custom" ? "custom" : tool.category}</span>
+              </div>
+              <div className="mt-1 truncate font-mono text-xs text-neutral-500">{tool.name}{tool.enabled ? "" : " · disabled"}</div>
+            </button>
+          ))}
+        </div>
+        {isAdmin && (
+          <details className="border-t border-neutral-100 p-3">
+            <summary className="cursor-pointer text-sm font-semibold text-neutral-800">自定义 HTTP 工具</summary>
+            <p className="mt-2 text-xs leading-5 text-neutral-600">保存后会出现在工具列表；`agentEnabled` 为 true 且 triggers 命中时，Agent 可自动调用。</p>
+            <textarea
+              className="mt-3 h-72 w-full resize-none rounded-md border border-neutral-200 bg-white p-2 font-mono text-[11px] leading-4 outline-none focus:border-cyan-700"
+              value={customToolText}
+              onChange={(event) => setCustomToolText(event.target.value)}
+              spellCheck={false}
+            />
+            {customError && <p className="mt-2 text-xs text-red-600">{customError}</p>}
+            <div className="mt-2 flex gap-2">
+              <button
+                type="button"
+                className="h-8 rounded-md bg-cyan-700 px-3 text-xs font-medium text-white hover:bg-cyan-800 disabled:opacity-60"
+                onClick={() => void saveCustomTool()}
+                disabled={savingCustom}
+              >
+                保存工具
+              </button>
+              {selected?.source === "custom" && (
+                <button
+                  type="button"
+                  className="h-8 rounded-md border border-red-200 px-3 text-xs text-red-700 hover:bg-red-50 disabled:opacity-60"
+                  onClick={() => void deleteSelectedCustomTool()}
+                  disabled={savingCustom}
+                >
+                  删除选中
+                </button>
+              )}
+            </div>
+          </details>
+        )}
+      </aside>
+
+      <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)]">
+        <div className="border-b border-neutral-100 px-4 py-3">
+          {selected ? (
+            <>
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-base font-semibold">{selected.displayName}</h3>
+                  <p className="mt-1 text-sm text-neutral-600">{selected.description}</p>
+                </div>
+                <button
+                  type="button"
+                  className="inline-flex h-9 shrink-0 items-center gap-2 rounded-md bg-cyan-700 px-3 text-sm font-medium text-white hover:bg-cyan-800 disabled:opacity-60"
+                  onClick={() => void runSelectedTool()}
+                  disabled={running}
+                >
+                  {running ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                  运行
+                </button>
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-neutral-600">
+                <MiniInfo label="scope" value={selected.scope} />
+                <MiniInfo label="readOnly" value={selected.readOnly ? "true" : "false"} />
+              </div>
+            </>
+          ) : (
+            <p className="text-sm text-neutral-500">暂无可用工具。</p>
+          )}
+        </div>
+
+        <div className="grid min-h-0 grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] gap-3 overflow-hidden p-3">
+          <section className="flex min-h-0 flex-col rounded-md border border-neutral-200">
+            <div className="border-b border-neutral-100 px-3 py-2">
+              <h4 className="text-sm font-semibold">参数</h4>
+            </div>
+            <div className="min-h-0 flex-1 space-y-3 overflow-auto p-3">
+              {selected && Object.entries(selected.parameters.properties).map(([name, property]) => (
+                <div key={name} className="rounded-md border border-neutral-100 bg-neutral-50 p-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono text-xs font-semibold text-neutral-800">{name}</span>
+                    <span className="text-[11px] text-neutral-500">{property.type}{required.has(name) ? " required" : ""}</span>
+                  </div>
+                  {property.description && <p className="mt-1 text-xs leading-5 text-neutral-600">{property.description}</p>}
+                </div>
+              ))}
+              <textarea
+                className="h-52 w-full resize-none rounded-md border border-neutral-200 bg-white p-3 font-mono text-xs leading-5 outline-none focus:border-cyan-700"
+                value={argsText}
+                onChange={(event) => setArgsText(event.target.value)}
+                spellCheck={false}
+              />
+            </div>
+          </section>
+
+          <section className="flex min-h-0 flex-col rounded-md border border-neutral-200">
+            <div className="border-b border-neutral-100 px-3 py-2">
+              <h4 className="text-sm font-semibold">结果</h4>
+            </div>
+            {error && <div className="m-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
+            <pre className="min-h-0 flex-1 overflow-auto p-3 text-xs leading-5 text-neutral-800">{resultText || "运行工具后显示 JSON 结果。"}</pre>
+          </section>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function defaultToolArgs(tool?: ToolDefinition): string {
+  const args: Record<string, unknown> = {}
+  for (const [name, property] of Object.entries(tool?.parameters.properties ?? {})) {
+    if (property.default !== undefined) args[name] = property.default
+  }
+  if (tool?.name === "retrieve_kb") args.query = ""
+  if (tool?.name === "read_kb_file") args.key = "wiki/index.md"
+  return JSON.stringify(args, null, 2)
+}
+
+function defaultCustomToolJson(): string {
+  const tool: CustomHttpToolConfig = {
+    name: "external_search",
+    displayName: "External search",
+    description: "Call an external HTTP service when the question needs this tool.",
+    category: "external",
+    scope: "knowledge_base",
+    readOnly: true,
+    enabled: true,
+    agentEnabled: false,
+    triggers: ["external_search"],
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Question or search phrase." },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+    http: {
+      url: "https://example.com/tool",
+      method: "POST",
+      headers: {},
+      timeoutMs: 10000,
+    },
+  }
+  return JSON.stringify(tool, null, 2)
+}
+
+function customToolFromDefinition(tool: ToolDefinition): CustomHttpToolConfig {
+  return {
+    name: tool.name,
+    displayName: tool.displayName,
+    description: tool.description,
+    category: tool.category,
+    scope: tool.scope,
+    readOnly: tool.readOnly,
+    enabled: tool.enabled,
+    agentEnabled: tool.agentEnabled,
+    triggers: tool.triggers,
+    parameters: tool.parameters,
+    http: {
+      url: "https://example.com/tool",
+      method: "POST",
+      headers: {},
+      timeoutMs: 10000,
+    },
+  }
 }
 
 type ReviewStatusFilter = ReviewItem["status"] | "all"
