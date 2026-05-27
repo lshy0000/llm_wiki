@@ -3,6 +3,7 @@ import { UndirectedGraph } from "graphology"
 import type { CommunityInfo, GraphEdge, GraphNode, ReviewItem, WikiPage } from "./types.js"
 import type { KnowledgeRepository } from "./repository.js"
 import { id, nowIso } from "./wiki-utils.js"
+import { isStructuralWikiPage, WikiLinkResolver, wikiLinksForPage } from "./wiki-link-resolver.js"
 
 const require = createRequire(import.meta.url)
 const louvain = require("graphology-communities-louvain") as (
@@ -35,8 +36,9 @@ export class GraphService {
   constructor(private readonly repo: KnowledgeRepository) {}
 
   async buildGraph(kbId: string): Promise<{ nodes: GraphNode[]; edges: GraphEdge[]; communities: CommunityInfo[] }> {
-    const pages = (await this.repo.listPages(kbId)).filter((page) => page.type !== "query" && page.path !== "wiki/index.md")
-    const links = await this.repo.listLinks(kbId)
+    const pages = (await this.repo.listPages(kbId)).filter((page) => page.type !== "query" && !isStructuralWikiPage(page))
+    const resolver = new WikiLinkResolver(pages)
+    const links = pages.flatMap((page) => wikiLinksForPage(page, resolver))
     const pageIds = new Set(pages.map((page) => page.id))
     const models = new Map<string, NodeModel>()
     for (const page of pages) models.set(page.id, { page, outLinks: new Set(), inLinks: new Set() })
@@ -49,6 +51,12 @@ export class GraphService {
     const candidatePairs = new Set<string>()
     for (const model of models.values()) {
       for (const target of model.outLinks) candidatePairs.add(this.edgeKey(model.page.id, target))
+      const neighbors = [...new Set([...model.outLinks, ...model.inLinks])]
+      for (let i = 0; i < neighbors.length; i += 1) {
+        for (let j = i + 1; j < neighbors.length; j += 1) {
+          candidatePairs.add(this.edgeKey(neighbors[i], neighbors[j]))
+        }
+      }
       for (const other of models.values()) {
         if (other.page.id !== model.page.id && this.sourceOverlap(model.page, other.page) > 0) {
           candidatePairs.add(this.edgeKey(model.page.id, other.page.id))
@@ -178,6 +186,11 @@ export class GraphService {
     }
     const edgeSet = new Set(edges.flatMap((edge) => [this.edgeKey(edge.source, edge.target), this.edgeKey(edge.target, edge.source)]))
     const pageMap = new Map(pages.map((page) => [page.id, page]))
+    const degree = new Map<string, number>()
+    for (const edge of edges) {
+      degree.set(edge.source, (degree.get(edge.source) ?? 0) + 1)
+      degree.set(edge.target, (degree.get(edge.target) ?? 0) + 1)
+    }
     const communities: CommunityInfo[] = [...groups.entries()].map(([communityId, ids]) => {
       let intra = 0
       for (let i = 0; i < ids.length; i++) {
@@ -190,9 +203,20 @@ export class GraphService {
         id: communityId,
         nodeCount: ids.length,
         cohesion: intra / possible,
-        topNodes: ids.slice(0, 5).map((pageId) => pageMap.get(pageId)?.title ?? pageId),
+        topNodes: [...ids]
+          .sort((a, b) => (degree.get(b) ?? 0) - (degree.get(a) ?? 0))
+          .slice(0, 5)
+          .map((pageId) => pageMap.get(pageId)?.title ?? pageId),
       }
     }).sort((a, b) => b.nodeCount - a.nodeCount)
+    const idRemap = new Map<number, number>()
+    communities.forEach((community, index) => {
+      idRemap.set(community.id, index)
+      community.id = index
+    })
+    for (const [nodeId, communityId] of assignments) {
+      assignments.set(nodeId, idRemap.get(communityId) ?? 0)
+    }
     return { assignments, communities }
   }
 

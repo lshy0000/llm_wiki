@@ -1,6 +1,7 @@
 import neo4j, { type Driver } from "neo4j-driver"
 import type { KnowledgeRepository } from "./repository.js"
 import type { KnowledgeBase, PageChunk, PageSource, SourceDocument, WikiLink, WikiPage } from "./types.js"
+import { isStructuralWikiPage, WikiLinkResolver, wikiLinksForPage } from "./wiki-link-resolver.js"
 
 export interface GraphPath {
   nodes: Array<{ id: string; kind: string; label: string }>
@@ -89,13 +90,15 @@ export function createGraphIndexFromEnv(logger: Logger): GraphIndex {
 export async function buildGraphIndexSnapshot(repo: KnowledgeRepository, kbId: string): Promise<GraphIndexSnapshot> {
   const kb = await repo.getKnowledgeBase(kbId)
   if (!kb) throw new Error("Knowledge base not found")
-  const [pages, sources, pageSources, chunks, links] = await Promise.all([
+  const [pages, sources, pageSources, chunks] = await Promise.all([
     repo.listPages(kbId),
     repo.listSources(kbId),
     repo.listPageSources(kbId),
     repo.listChunks(kbId),
-    repo.listLinks(kbId),
   ])
+  const linkPages = pages.filter((page) => page.type !== "query" && !isStructuralWikiPage(page))
+  const resolver = new WikiLinkResolver(linkPages)
+  const links = linkPages.flatMap((page) => wikiLinksForPage(page, resolver))
   return { kb, pages, sources, pageSources, chunks, links }
 }
 

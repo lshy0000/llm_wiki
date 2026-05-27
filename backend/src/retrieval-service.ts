@@ -10,6 +10,7 @@ import type {
 import type { KnowledgeRepository } from "./repository.js"
 import type { GraphIndex, GraphPath, GraphRecallSeed } from "./graph-index-service.js"
 import { buildSnippet, tokenize } from "./wiki-utils.js"
+import { isStructuralWikiPage, WikiLinkResolver, wikiLinksForPage } from "./wiki-link-resolver.js"
 
 export type RetrievalMode = "keyword" | "vector" | "hybrid" | "graph" | "graph-hybrid"
 
@@ -63,16 +64,18 @@ export class RetrievalService {
     const phrase = normalizeForMatch(trimmed)
     const compactPhrase = compactForMatch(trimmed)
 
-    const [pages, chunks, links, pageSources, images, sources] = await Promise.all([
+    const [pages, chunks, pageSources, images, sources] = await Promise.all([
       this.repo.listPages(kbId),
       this.repo.listChunks(kbId),
-      this.repo.listLinks(kbId),
       this.repo.listPageSources(kbId),
       this.repo.listImages(kbId),
       this.repo.listSources(kbId),
     ])
 
     const pageById = new Map(pages.map((page) => [page.id, page]))
+    const linkPages = pages.filter((page) => page.type !== "query" && !isStructuralWikiPage(page))
+    const resolver = new WikiLinkResolver(linkPages)
+    const links = linkPages.flatMap((page) => wikiLinksForPage(page, resolver))
     const chunksByPage = groupBy(chunks, (chunk) => chunk.pageId)
     const imagesByPage = groupBy(images, (image) => image.pageId ?? "")
     const pageSourceIds = buildPageSourceIds(pages, pageSources)

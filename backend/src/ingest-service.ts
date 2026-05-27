@@ -1,18 +1,17 @@
-import type { EvidenceBlock, ImageAsset, IngestJob, PageChunk, ParsedDocument, ReviewItem, WikiLink, WikiPage } from "./types.js"
+import type { EvidenceBlock, ImageAsset, IngestJob, PageChunk, ParsedDocument, ReviewItem, WikiPage } from "./types.js"
 import { DocumentParser } from "./document-parser.js"
 import { makeEvidenceBlock, renderEvidenceMarkdown } from "./evidence.js"
 import { syncGraphIndexForKnowledgeBase, type GraphIndex } from "./graph-index-service.js"
 import { LlmGateway } from "./llm-gateway.js"
 import type { KnowledgeRepository } from "./repository.js"
 import type { StorageProvider } from "./storage.js"
+import { isStructuralWikiPage, WikiLinkResolver, wikiLinksForPage } from "./wiki-link-resolver.js"
 import {
   buildFallbackWikiPage,
   canonicalWikiPagePath,
   chunkText,
-  extractWikiLinks,
   id,
   imageMarkdown,
-  normalizeStorageKey,
   nowIso,
   pageIdFromPath,
   parseFileBlocks,
@@ -169,20 +168,23 @@ export class IngestService {
 
       await update({ progress: 58, stage: "Step 2: wiki page generation", analysis })
       this.ensureNotCancelled(job.id)
+      const existingPages = await this.repo.listPages(job.kbId)
+      const pageCatalog = this.renderPageCatalog(existingPages)
       const generation = await this.llm.completeForCompany(
         source.companyId,
         [
           {
             role: "system",
             content:
-              "Generate llm_wiki FILE and REVIEW blocks. FILE blocks must be fenced as ```FILE wiki/...md. Put pages in canonical directories by type: entity -> wiki/entities, concept -> wiki/concepts, source -> wiki/sources, query -> wiki/queries, comparison -> wiki/comparisons, synthesis -> wiki/synthesis. Use only those page types unless updating a root system page. Every page must include YAML frontmatter with type, title, sources, source_path, and folder_context. Ground factual statements in the provided Evidence IDs and source locators. Use [[wikilink]] relations and cite the source id.",
+              "Generate llm_wiki FILE and REVIEW blocks. FILE blocks must be fenced as ```FILE wiki/...md. Put pages in canonical directories by type: entity -> wiki/entities, concept -> wiki/concepts, source -> wiki/sources, query -> wiki/queries, comparison -> wiki/comparisons, synthesis -> wiki/synthesis. Use only those page types unless updating a root system page. Every page must include YAML frontmatter with type, title, sources, source_path, and folder_context. Ground factual statements in the provided Evidence IDs and source locators. Create dense [[wikilink]] relations between generated pages and existing wiki pages. Use the exact existing page id when linking to an existing page. Do not wrap source ids such as src_... in [[wikilinks]]; cite source ids as plain text or Evidence references.",
           },
           {
             role: "user",
             content: [
+              pageCatalog ? `Existing wiki page catalog:\n${pageCatalog}` : "",
               `Analysis:\n${analysis}`,
               `Source context:\n${sourceContext.slice(0, 30_000)}`,
-            ].join("\n\n---\n\n"),
+            ].filter(Boolean).join("\n\n---\n\n"),
           },
         ],
         this.fallbackGeneration(source.relativePath, fallbackSourceText, source.id, source.folderContext, imageAssets),
@@ -197,9 +199,7 @@ export class IngestService {
         fileBlocks.push({ kind: "file", path: fallback.path, content: fallback.content })
       }
 
-      const pages = await this.repo.listPages(job.kbId)
-      const pageIds = new Set(pages.map((page) => page.id))
-      const pageById = new Map(pages.map((page) => [page.id, page]))
+      const pageById = new Map(existingPages.map((page) => [page.id, page]))
       const writtenPageIds: string[] = []
       for (const block of fileBlocks) {
         this.ensureNotCancelled(job.id)
@@ -217,17 +217,8 @@ export class IngestService {
         }
         await this.repo.upsertPage(page)
         await this.repo.replacePageSources(job.kbId, page.id, [{ companyId: source.companyId, kbId: job.kbId, pageId: page.id, sourceId: source.id }])
-        const links: WikiLink[] = extractWikiLinks(content).map((raw) => ({
-          companyId: source.companyId,
-          kbId: job.kbId,
-          sourcePageId: page.id,
-          targetPageId: this.resolveTarget(raw, pageIds),
-          targetRaw: raw,
-        }))
-        await this.repo.replacePageLinks(job.kbId, page.id, links)
         await this.repo.replaceChunks(job.kbId, page.id, await this.buildChunks(job.kbId, page.id, content))
         writtenPageIds.push(page.id)
-        pageIds.add(page.id)
         pageById.set(page.id, page)
       }
 
@@ -247,7 +238,8 @@ export class IngestService {
         await this.repo.addReview(review)
       }
 
-      await this.rebuildIndexPage(job.kbId)
+      pageById.set("index", await this.rebuildIndexPage(job.kbId))
+      await this.rebuildPageLinks(job.kbId, [...pageById.values()])
       if (this.graphIndex) await syncGraphIndexForKnowledgeBase(this.repo, this.graphIndex, job.kbId)
       await this.repo.setIngestCache(job.kbId, source.id, source.sha256, writtenPageIds)
       await this.repo.saveSource({ ...source, status: "ingested", updatedAt: nowIso(), error: undefined })
@@ -346,17 +338,23 @@ export class IngestService {
     return chunks
   }
 
-  private resolveTarget(raw: string, existingIds: Set<string>): string {
-    if (existingIds.has(raw)) return raw
-    const slug = normalizeStorageKey(raw).toLowerCase().replace(/\s+/g, "-")
-    for (const idValue of existingIds) {
-      const lower = idValue.toLowerCase()
-      if (lower === slug || lower === raw.toLowerCase()) return idValue
-    }
-    return slug
+  private renderPageCatalog(pages: WikiPage[]): string {
+    return pages
+      .filter((page) => !isStructuralWikiPage(page))
+      .slice(0, 240)
+      .map((page) => `- ${page.id} [${page.type}] ${page.title} (${page.path})`)
+      .join("\n")
   }
 
-  private async rebuildIndexPage(kbId: string): Promise<void> {
+  private async rebuildPageLinks(kbId: string, pages: WikiPage[]): Promise<void> {
+    const resolver = new WikiLinkResolver(pages)
+    for (const page of pages) {
+      if (page.kbId !== kbId) continue
+      await this.repo.replacePageLinks(kbId, page.id, wikiLinksForPage(page, resolver))
+    }
+  }
+
+  private async rebuildIndexPage(kbId: string): Promise<WikiPage> {
     const pages = (await this.repo.listPages(kbId)).filter((page) => page.path !== "wiki/index.md")
     const groups = new Map<string, WikiPage[]>()
     for (const page of pages) groups.set(page.type, [...(groups.get(page.type) ?? []), page])
@@ -371,7 +369,7 @@ export class IngestService {
     await this.storage.writeObject(kbId, "wiki/index.md", content)
     const kb = await this.repo.getKnowledgeBase(kbId)
     if (!kb) throw new Error("Knowledge base not found")
-    await this.repo.upsertPage({ ...this.buildPage(kbId, "wiki/index.md", content, "system", []), companyId: kb.companyId })
+    return this.repo.upsertPage({ ...this.buildPage(kbId, "wiki/index.md", content, "system", []), companyId: kb.companyId })
   }
 
   private ensureNotCancelled(jobId: string): void {
