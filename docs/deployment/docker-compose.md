@@ -105,5 +105,5 @@ POST /api/kbs/{kbId}/retrieval/reindex
 - 不要把 PostgreSQL 和 Neo4j 端口直接暴露到公网。需要远程维护时，优先用安全组、内网、SSH 隧道或 VPN。
 - `.env.docker` 是真实部署密钥文件，已经加入 `.gitignore`，不要提交。
 - 本部署没有引入 yuxi 的 Milvus。当前向量能力来自 PostgreSQL 的 pgvector。
-- 查询链路是否使用 LLM 不由 Docker 决定。这里部署的是工具服务和检索基础设施，图召回依赖 Neo4j，向量字段依赖 pgvector。
+- Docker 只负责部署工具服务、检索基础设施和 Agent 服务。`/api/kbs/:kbId/search` 与 `retrieve_kb` 检索工具不调用 LLM；`/api/kbs/:kbId/chat` 是 Agent 主路径，可能在工具召回后调用已配置的 LLM 生成最终答案。
 - 当前任务没有在本机运行 Docker，也没有执行部署验证。

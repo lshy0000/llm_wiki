@@ -42,7 +42,7 @@
 - **Deep Research** — LLM-optimized search topics, multi-query web search via Tavily, SerpApi, or SearXNG, auto-ingest results into wiki
 - **Async Review System** — LLM flags items for human judgment, predefined actions, pre-generated search queries
 - **Chrome Web Clipper** — one-click web page capture with auto-ingest into knowledge base
-- **Local HTTP API + AI Agent Skill** — built-in `127.0.0.1:19828` JSON API (token-protected) for hybrid search, file read, graph traversal, and source rescan; ready-made [agent skill](https://github.com/nashsu/llm_wiki_skill) installs into Claude Code / Codex with one command (`npx skills add …`)
+- **Local HTTP API + Agent-ready backend** — built-in `127.0.0.1:19828` JSON API for local project tools, plus Fastify knowledge-base Agent endpoints for graph-first retrieval, tools, citations, and traceable chat
 
 ## What is this?
 
@@ -419,6 +419,15 @@ LLM Wiki ships a built-in local HTTP API at `http://127.0.0.1:19828` (token-prot
 - `POST /api/v1/projects/{id}/sources/rescan` — trigger a backend rescan
 
 Enable + generate a token in **Settings → API Server**.
+
+This local Rust API is the desktop/project integration surface. The current knowledge-base Agent main path is the Fastify backend:
+
+- `POST /api/kbs/:kbId/search` — zero-LLM graph-first retrieval; accepts optional `queryEmbedding`
+- `POST /api/kbs/:kbId/retrieval/reindex` — rebuild the optional Neo4j graph recall index
+- `GET /api/kbs/:kbId/tools` / `POST /api/kbs/:kbId/tools/:toolName/run` — deterministic tool registry
+- `POST /api/kbs/:kbId/chat` — Agent chat returning `answer`, `citations`, and public `trace`
+
+Neo4j graph recall is optional. Configure `KN_NEO4J_URI`, `KN_NEO4J_USERNAME`, `KN_NEO4J_PASSWORD`, and `KN_NEO4J_DATABASE`; without Neo4j, retrieval falls back to Postgres graph signals and lexical recall. Docker deployment notes live in [`docs/deployment/docker-compose.md`](docs/deployment/docker-compose.md).
 
 ### Plug your AI agent in with one command
 

@@ -467,10 +467,10 @@
         "endpointProjectsNote": "列出所有已知项目及其 ID 和路径。",
         "endpointFilesNote": "?root=wiki|sources|all；?recursive=false；?maxFiles=N（≤10000）。",
         "endpointContentNote": "?path=wiki/index.md —— 仅文本文件，最大 2 MB。",
-        "endpointSearchNote": "JSON body：{ query, topK?, includeContent?, queryEmbedding? }。配置嵌入后使用统一的关键词 + 向量检索。",
+        "endpointSearchNote": "JSON body：{ query, topK?, includeContent?, queryEmbedding? }。本地项目搜索走关键词召回；配置向量嵌入后自动合并 LanceDB 向量结果，搜索阶段不调用 LLM。",
         "endpointGraphNote": "?q=…&nodeType=…&limit=N —— 基于 wiki/*.md 的双链图谱。",
         "endpointRescanNote": "使用你的资料文件夹监控配置触发后端重新扫描。",
-        "endpointChatNote": "尚未实现（返回 501）。"
+        "endpointChatNote": "遗留桌面 API 槽位。当前 Agent 聊天主路径是 Fastify 的 POST /api/kbs/{kbId}/chat，返回 answer、citations 和 trace。"
       },
       "output": {
         "title": "输出偏好",

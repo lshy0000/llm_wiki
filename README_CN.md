@@ -42,7 +42,7 @@
 - **深度研究** — LLM 智能生成搜索主题，通过 Tavily、SerpApi 或 SearXNG 进行多查询网络搜索，研究结果自动摄入 Wiki
 - **异步审核系统** — LLM 在摄入时标记需人工判断的项，预定义操作，预生成搜索查询
 - **Chrome 网页剪藏** — 一键捕获网页内容，自动摄入知识库
-- **本地 HTTP API + AI Agent Skill** — 内置 `127.0.0.1:19828` JSON API（Token 鉴权），支持 Hybrid 检索、文件读取、知识图谱遍历、源资料重新扫描；配套 [agent skill](https://github.com/nashsu/llm_wiki_skill) 一行命令接入 Claude Code / Codex（`npx skills add …`）
+- **本地 HTTP API + Agent-ready 后端** — 内置 `127.0.0.1:19828` JSON API 负责本地项目工具，同时 Fastify 知识库接口提供图优先召回、工具注册表、引用和可追踪 Agent 聊天
 
 ## 这是什么？
 
@@ -419,6 +419,15 @@ LLM Wiki 内置一个本地 HTTP API（监听 `http://127.0.0.1:19828`，Token �
 - `POST /api/v1/projects/{id}/sources/rescan` —— 触发后端重新扫描
 
 在 **设置 → API 服务** 中开启 API 并生成 Token。
+
+这个 Rust 本地 API 是桌面/项目集成面。当前知识库 Agent 主路径在 Fastify 后端：
+
+- `POST /api/kbs/:kbId/search` —— 查询时零 LLM 的图优先召回，可接收可选 `queryEmbedding`
+- `POST /api/kbs/:kbId/retrieval/reindex` —— 重建可选 Neo4j 图召回索引
+- `GET /api/kbs/:kbId/tools` / `POST /api/kbs/:kbId/tools/:toolName/run` —— 确定性工具注册表
+- `POST /api/kbs/:kbId/chat` —— Agent 聊天，返回 `answer`、`citations` 和公开 `trace`
+
+Neo4j 图召回是可选能力。配置 `KN_NEO4J_URI`、`KN_NEO4J_USERNAME`、`KN_NEO4J_PASSWORD`、`KN_NEO4J_DATABASE` 后启用；未配置时，召回会回退到 Postgres 图信号和词法召回。Docker 部署说明见 [`docs/deployment/docker-compose.md`](docs/deployment/docker-compose.md)。
 
 ### 一条命令把 AI Agent 接进你的知识库
 

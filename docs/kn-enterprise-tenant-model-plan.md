@@ -409,7 +409,7 @@ AuditService
 | `IngestService` | job 加 `companyId`，模型调用走 `ModelResolver` |
 | `SearchService` | 查询加 `companyId`，向量表按 company/kb 隔离 |
 | `GraphService` | 节点、边、洞察按 company/kb 隔离 |
-| `ChatService` | conversation 加 `companyId` 和 `memberId` |
+| `AgentService` | conversation / chat message 绑定 `companyId`，通过 auth context 识别成员权限 |
 | `LintService` | review 加 `companyId`，resolve 需要权限 |
 | `LlmGateway` | 不直接读 env，接收 resolved model credential |
 
@@ -585,4 +585,3 @@ AuditService
 8. 摄取、搜索、图谱、问答都从公司上下文和公司模型池解析资源。
 9. 前端有个人中心、公司切换、公司设置、模型池、成员管理。
 10. 所有服务端查询都有明确租户边界。
-

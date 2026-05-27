@@ -165,7 +165,7 @@ GET  /api/v1/projects/:id/files/content?path=wiki/entities/foo.md  # 读取文�
 POST /api/v1/projects/:id/search      # 混合检索
 GET  /api/v1/projects/:id/graph       # 知识图谱
 POST /api/v1/projects/:id/ingest      # 触发摄入（新增）
-POST /api/v1/projects/:id/chat        # RAG 对话（新增，当前 Rust 版 501）
+POST /api/kbs/:kbId/chat              # Agent 对话（Fastify 主路径，返回 answer / citations / trace）
 POST /api/v1/projects/:id/lint        # 健康检查（新增）
 ```
 

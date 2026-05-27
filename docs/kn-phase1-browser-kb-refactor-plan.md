@@ -14,7 +14,7 @@ summary: "从当前 Tauri 桌面版源码出发，制定第一阶段单体服务
 ```
 Browser Web UI
   -> Fastify REST API
-  -> ProjectService / SourceService / IngestService / SearchService / GraphService / ChatService / LintService
+  -> ProjectService / SourceService / IngestService / RetrievalService / SearchService / GraphService / ToolService / AgentService / LintService
   -> StorageProvider + IndexRepository + LlmGateway
 ```
 
@@ -41,7 +41,7 @@ Browser Web UI
 | 知识结构 | `KnowledgeTree` 扫 `wiki/*.md` 解析 frontmatter/type/title | 每次扫描 markdown，缺少服务端索引 | 写入/更新 wiki 页时同步 `wiki_pages` 索引，树从索引生成 |
 | 搜索 | TS `search.ts` 调 Rust `search_project`，Rust WalkDir 扫 wiki + LanceDB + RRF | 检索绑定本地文件扫描和嵌入式 LanceDB | `SearchService` 从索引库召回，保留 tokenizer/RRF；向量后端第一阶段做接口，第二阶段接 pgvector |
 | 图谱 | `wiki-graph.ts` 扫 wiki，`graph-relevance.ts` 4 信号，graphology Louvain | 算法好，但数据源是 markdown 扫描和内存图 | `GraphService` 从 page/link/source 索引读数据，第一阶段仍可内存计算 Louvain，第二阶段接 Neo4j |
-| 问答 | `chat-panel.tsx` 在前端做 RAG 编排，再直接 `streamChat` | 业务逻辑在 UI，Rust API 的 chat 是 501 | `ChatService` 搬走 RAG orchestration：搜索、图谱扩展、预算控制、组 prompt、流式回答 |
+| 问答 | `chat-panel.tsx` 在前端做 RAG 编排，再直接 `streamChat`；旧 Rust 本地 API 的 chat 槽位未承载主流程 | 业务逻辑在 UI，桌面本地 API 不适合作为知识库 Agent 主入口 | `AgentService` 通过 `ToolService` 编排 `retrieve_kb` / `get_mindmap` / `read_kb_file`，最后生成答案并返回 citations / trace |
 | Lint/Review | `lint.ts` 扫 markdown，review 存 Zustand + `.llm-wiki/review.json` | 结果和状态在前端/本地 JSON | `LintService` + `ReviewRepository` 服务端化 |
 | HTTP API | Rust `api_server.rs` tiny_http，提供 health/files/search/graph/rescan，chat 未实现 | 只是桌面伴生 API，不适合继续扩 | 用 Fastify 重建 API，不在 tiny_http 上继续堆功能 |
 
@@ -90,8 +90,10 @@ Fastify App
   +-- SourceService        上传、解析、source 状态
   +-- IngestService        两步 CoT、wiki 页面生成、review、索引更新
   +-- SearchService        关键词召回、向量接口、RRF 融合
+  +-- RetrievalService     查询时零 LLM 的图优先召回核心
   +-- GraphService         link 图、4 信号权重、Louvain、图谱 API
-  +-- ChatService          RAG 编排、流式回答、引用来源
+  +-- ToolService          Agent 可调用的确定性工具注册表
+  +-- AgentService         工具编排、最终回答、引用来源、执行 trace
   +-- LintService          结构/语义 lint、review 写入
   +-- LlmGateway           provider 路由，服务端 fetch/undici
   |
@@ -126,9 +128,12 @@ kn-server/
       project-service.ts
       source-service.ts
       ingest-service.ts
+      retrieval-service.ts
       search-service.ts
       graph-service.ts
-      chat-service.ts
+      tool-service.ts
+      tool-config-service.ts
+      agent-service.ts
       lint-service.ts
       llm-gateway.ts
     providers/
@@ -224,7 +229,7 @@ export interface StorageProvider {
 | `GET /api/kbs/:kbId/wiki/pages/:pageId` | 页面内容 |
 | `POST /api/kbs/:kbId/search` | 简单召回，返回页面、片段、分数 |
 | `GET /api/kbs/:kbId/graph` | 图谱节点、边、社区 |
-| `POST /api/kbs/:kbId/chat` | 问答，建议 SSE 流式输出 |
+| `POST /api/kbs/:kbId/chat` | Agent 问答，返回 `answer`、`citations`、公开 `trace` |
 | `POST /api/kbs/:kbId/lint` | 运行 lint |
 | `GET /api/kbs/:kbId/reviews` | review/lint 问题列表 |
 | `PATCH /api/kbs/:kbId/reviews/:reviewId` | resolve/dismiss/reopen |
@@ -359,24 +364,24 @@ export interface StorageProvider {
 - 4 信号可预计算到关系属性。
 - Louvain 可迁移到 Neo4j GDS，或继续导出子图到 graphology 计算。
 
-### 7.6 ChatService
+### 7.6 AgentService
 
-目标：把 `chat-panel.tsx` 里的 RAG 编排搬到服务端。
+目标：把 `chat-panel.tsx` 里的 RAG 编排搬到服务端，并改成 Agent 使用工具的主路径。
 
 服务端流程：
 
 1. 接收 question、kbId、conversationId。
 2. 判断 greeting，必要时跳过召回。
-3. 读取 purpose/index。
-4. 调 `SearchService.search()` 得到 top results。
-5. 调 `GraphService.expand()` 做图谱扩展。
-6. 按 context budget 读取页面内容。
-7. 组装 system prompt。
-8. 调 `LlmGateway.streamChat()`。
-9. SSE 返回 token、reasoning token、done、citations。
-10. 保存 chat message 和引用页。
+3. 调 `retrieve_kb` 做图优先召回。
+4. 对结构型问题可调 `get_mindmap`。
+5. 首次召回弱且有 embedding 模型时，补一次带 `queryEmbedding` 的召回。
+6. 对需要精确证据的问题调 `read_kb_file`。
+7. 命中 `agentEnabled` 且 triggers 匹配的自定义 HTTP 工具时，自动补充外部证据。
+8. 调 `LlmGateway.completeForCompany()` 生成最终答案；无可用 LLM 时返回基于召回证据的 fallback。
+9. 返回 `answer`、`citations`、公开 `trace`。
+10. 保存 user/assistant chat message 和引用页。
 
-不要让浏览器自己读 wiki 页面、自己拼 prompt、自己调 LLM。浏览器只负责展示消息流和引用。
+不要让浏览器自己读 wiki 页面、自己拼 prompt、自己调 LLM。浏览器只负责展示消息、引用和执行 trace。
 
 ### 7.7 LintService
 
@@ -405,7 +410,7 @@ export interface StorageProvider {
 | `KnowledgeTree` | 调 `GET /wiki/tree` |
 | `GraphView` | 调 `GET /graph`，保留 sigma.js 渲染 |
 | `SearchView` | 调 `POST /search` |
-| `ChatPanel` | 只保留 UI 状态和 SSE 消费，RAG 编排移入 `ChatService` |
+| `ChatPanel` | 只保留 UI 状态和响应展示，RAG/工具编排移入 `AgentService` |
 | `LintView` / `ReviewView` | 调 lint/review API |
 | `project-store.ts` | 删除 Tauri Store 依赖，改服务端 KB 列表 |
 | `tauri-fetch.ts` | 浏览器端不再用于 LLM；服务端用 undici/fetch |
@@ -494,9 +499,10 @@ export interface StorageProvider {
 
 交付：
 
-- `ChatService`。
-- `POST /chat` SSE 流式回答。
-- 搜索 + 图谱扩展 + context budget + citations。
+- `AgentService`。
+- `POST /api/kbs/:kbId/chat` 返回 answer / citations / trace。
+- `retrieve_kb` + `get_mindmap` + `read_kb_file` 工具编排。
+- 弱召回 embedding retry + LLM fallback。
 - chat history 存储。
 
 验收：
@@ -557,7 +563,7 @@ export interface StorageProvider {
 
 ### 10.4 是否继续扩 Rust tiny_http API
 
-不建议。当前 Rust API 的 `chat` 是 501，graph 也是简版 wikilink graph，不包含 4 信号和 Louvain。继续扩它会把目标拉回“桌面伴生服务”，不是浏览器知识库服务端。
+不建议。Rust `tiny_http` API 是桌面伴生接口，graph 也是简版 wikilink graph，不包含 4 信号和 Louvain。当前 Agent 聊天主路径已经放到 Fastify `POST /api/kbs/:kbId/chat`；继续扩旧本地 API 会把目标拉回“桌面伴生服务”，不是浏览器知识库服务端。
 
 ### 10.5 多模态图片什么时候做
 
@@ -595,4 +601,3 @@ Phase 1 完成时，应该能做到：
 - 搜索和图谱的数据源来自服务端索引，而不是请求时扫描本地 markdown。
 
 这时再进入 Phase 2：PostgreSQL/pgvector、Neo4j、Redis/BullMQ、MinIO、多租户、JWT/RBAC、MCP Server。
-

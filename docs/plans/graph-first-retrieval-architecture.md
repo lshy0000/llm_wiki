@@ -356,10 +356,17 @@ POST /api/kbs/:kbId/tools/:toolName/run
 
 这些都是纯工具，不负责最终回答。
 
+### Phase 5: Agent Chat Main Path（已实现第一版）
+
+- `POST /api/kbs/:kbId/chat` 是当前知识库 Agent 主路径。
+- Agent 先调用确定性工具拿证据，再由 `LlmGateway` 生成最终自然语言答案。
+- 返回 `answer`、`citations`、`trace`，其中 `trace` 是公开执行轨迹，不是隐藏思维链。
+- 旧桌面本地 API `POST /api/v1/projects/{id}/chat` 不代表当前 Agent 主路径。
+
 ## 明确不做
 
-- 查询时不调用 LLM。
-- 查询时不做 LLM keyword extraction。
+- 检索工具不调用 LLM。
+- 检索工具不做 LLM keyword extraction。
 - 检索工具不生成最终答案。
 - 不把 Neo4j 当业务主库。
 - 不用向量替代图召回。

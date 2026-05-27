@@ -467,10 +467,10 @@
         "endpointProjectsNote": "List known projects with their IDs and paths.",
         "endpointFilesNote": "?root=wiki|sources|all; ?recursive=false; ?maxFiles=N (≤10000).",
         "endpointContentNote": "?path=wiki/index.md — text files only, 2 MB max.",
-        "endpointSearchNote": "JSON body: { query, topK?, includeContent?, queryEmbedding? }. Uses shared keyword + vector retrieval when embeddings are configured.",
+        "endpointSearchNote": "JSON body: { query, topK?, includeContent?, queryEmbedding? }. Local project search uses keyword recall plus LanceDB vectors when embeddings are configured; no LLM is called during search.",
         "endpointGraphNote": "?q=…&nodeType=…&limit=N — wikilinks graph derived from wiki/*.md.",
         "endpointRescanNote": "Triggers a backend rescan using your Source Watch config.",
-        "endpointChatNote": "Not implemented yet (returns 501)."
+        "endpointChatNote": "Legacy desktop API slot. Current Agent chat is served by Fastify at POST /api/kbs/{kbId}/chat and returns answer, citations, and trace."
       },
       "output": {
         "title": "Output Preferences",

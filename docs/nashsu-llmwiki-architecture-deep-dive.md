@@ -234,12 +234,12 @@ GET  /api/v1/projects/{id}/files
 GET  /api/v1/projects/{id}/files/content
 POST /api/v1/projects/{id}/search
 GET  /api/v1/projects/{id}/graph
-POST /api/v1/projects/{id}/chat         ← 返回 501（未实现）
+POST /api/v1/projects/{id}/chat         ← 旧桌面本地 API 槽位；当前 Agent 主路径是 /api/kbs/:kbId/chat
 POST /api/v1/projects/{id}/sources/rescan
 ```
 
 **关键信息**：
-- Chat 端点返回 501 Not Implemented——RAG 对话管线尚未通过 API 暴露
+- `/api/v1/projects/{id}/chat` 是旧桌面本地 API 槽位；当前服务端 Agent 主路径已经迁移到 Fastify `POST /api/kbs/:kbId/chat`，返回 answer / citations / trace
 - 120 req/s 限流，64 并发上限
 - Bearer token 认证已实现（常量时间比较防时序攻击）
 - `/health` 不检查认证
