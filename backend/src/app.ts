@@ -443,13 +443,15 @@ function registerRoutes(app: AppInstance, services: AppServices): void {
   app.get<{ Params: { kbId: string } }>("/api/kbs/:kbId/tools", async (request, reply) => {
     const auth = await requireAuth(request, reply, services)
     if (!auth || !(await getCompanyKnowledgeBase(services, auth, request.params.kbId, reply))) return
-    return services.tools.listDefinitions({ kbScoped: true })
+    return services.tools.listDefinitions({ kbScoped: true, dedicatedKb: true })
   })
 
   app.post<{ Params: { kbId: string; toolName: string }; Body: { arguments?: unknown } }>("/api/kbs/:kbId/tools/:toolName/run", async (request, reply) => {
     const auth = await requireAuth(request, reply, services)
     const kb = auth ? await getCompanyKnowledgeBase(services, auth, request.params.kbId, reply) : undefined
     if (!auth || !kb) return
+    const definition = services.tools.getDefinition(request.params.toolName)
+    if (!definition || definition.scope !== "knowledge_base") return reply.code(404).send({ error: "Tool not found" })
     try {
       return await services.tools.run(request.params.toolName, { auth, kb }, toolArgs(request.body))
     } catch (err) {
@@ -513,9 +515,15 @@ function registerRoutes(app: AppInstance, services: AppServices): void {
       if (savedManifest.accepted) created.push(savedManifest)
       else skipped.push(savedManifest)
     }
-    if (created.some((item) => item.job)) await services.ingest.processQueue()
     if (created.length === 0) return reply.code(400).send({ error: "No supported file uploaded", skipped })
-    return { created, skipped }
+    const task = await services.source.createIngestTask({
+      kbId: kb.id,
+      uploadBatchId,
+      title: uploadTaskTitle(created),
+      items: created,
+    })
+    if (task.jobs.length > 0) await services.ingest.processQueue()
+    return { created, skipped, task }
   })
 
   app.get<{ Params: { kbId: string } }>("/api/kbs/:kbId/sources", async (request, reply) => {
@@ -534,6 +542,20 @@ function registerRoutes(app: AppInstance, services: AppServices): void {
     if (!auth || !(await getCompanyKnowledgeBase(services, auth, request.params.kbId, reply))) return
     return services.repo.listJobs(request.params.kbId)
   })
+  app.get<{ Params: { kbId: string } }>("/api/kbs/:kbId/tasks", async (request, reply) => {
+    const auth = await requireAuth(request, reply, services)
+    if (!auth || !(await getCompanyKnowledgeBase(services, auth, request.params.kbId, reply))) return
+    return services.repo.listTasks({ kbId: request.params.kbId })
+  })
+  app.get<{ Querystring: { kbId?: string } }>("/api/tasks", async (request, reply) => {
+    const auth = await requireAuth(request, reply, services)
+    if (!auth) return
+    if (request.query.kbId) {
+      if (!(await getCompanyKnowledgeBase(services, auth, request.query.kbId, reply))) return
+      return services.repo.listTasks({ kbId: request.query.kbId })
+    }
+    return services.repo.listTasks(isPlatformAdmin(auth) ? {} : { companyId: auth.company.id })
+  })
   app.post<{ Params: { jobId: string } }>("/api/jobs/:jobId/cancel", async (request, reply) => {
     const auth = await requireAuth(request, reply, services)
     if (!auth || !(await verifyJobCompany(services, auth, request.params.jobId, reply))) return
@@ -546,6 +568,16 @@ function registerRoutes(app: AppInstance, services: AppServices): void {
     if (!job) return reply.code(404).send({ error: "Job not found" })
     await services.ingest.enqueueExisting(job)
     return services.repo.getJob(job.id)
+  })
+  app.post<{ Params: { taskId: string } }>("/api/tasks/:taskId/cancel", async (request, reply) => {
+    const auth = await requireAuth(request, reply, services)
+    if (!auth || !(await verifyTaskCompany(services, auth, request.params.taskId, reply))) return
+    return services.ingest.cancelTask(request.params.taskId)
+  })
+  app.post<{ Params: { taskId: string } }>("/api/tasks/:taskId/retry", async (request, reply) => {
+    const auth = await requireAuth(request, reply, services)
+    if (!auth || !(await verifyTaskCompany(services, auth, request.params.taskId, reply))) return
+    return services.ingest.retryTask(request.params.taskId)
   })
 
   app.get<{ Params: { kbId: string }; Querystring: { root?: string } }>("/api/kbs/:kbId/files", async (request, reply) => {
@@ -618,6 +650,51 @@ function registerRoutes(app: AppInstance, services: AppServices): void {
     return services.graph.insights(request.params.kbId)
   })
 
+  app.get<{ Params: { kbId: string } }>("/api/kbs/:kbId/conversations", async (request, reply) => {
+    const auth = await requireAuth(request, reply, services)
+    if (!auth || !(await getCompanyKnowledgeBase(services, auth, request.params.kbId, reply))) return
+    return services.repo.listAgentConversations(request.params.kbId)
+  })
+
+  app.get<{ Params: { kbId: string; conversationId: string } }>("/api/kbs/:kbId/conversations/:conversationId", async (request, reply) => {
+    const auth = await requireAuth(request, reply, services)
+    if (!auth || !(await getCompanyKnowledgeBase(services, auth, request.params.kbId, reply))) return
+    const conversation = await services.repo.getAgentConversation(request.params.kbId, request.params.conversationId)
+    if (!conversation) return reply.code(404).send({ error: "Conversation not found" })
+    const [messages, runs] = await Promise.all([
+      services.repo.listChatMessages(request.params.kbId, request.params.conversationId),
+      services.repo.listAgentRunsByConversation(request.params.kbId, request.params.conversationId),
+    ])
+    const steps = await services.repo.listAgentRunStepsByRunIds(runs.map((run) => run.id))
+    const stepsByAssistantMessage = new Map(
+      runs
+        .filter((run) => run.assistantMessageId)
+        .map((run) => [
+          run.assistantMessageId!,
+          steps
+            .filter((item) => item.runId === run.id)
+            .map((item) => ({
+              id: item.id,
+              type: item.type,
+              title: item.title,
+              detail: item.detail,
+              toolName: item.toolName,
+              latencyMs: item.latencyMs,
+              input: item.input,
+              outputSummary: item.outputSummary,
+            })),
+        ]),
+    )
+    return {
+      conversation,
+      messages: messages.map((message) => ({
+        ...message,
+        trace: message.role === "assistant" ? stepsByAssistantMessage.get(message.id) ?? [] : undefined,
+      })),
+      runs,
+    }
+  })
+
   app.post<{ Params: { kbId: string }; Body: { question?: string; conversationId?: string } }>("/api/kbs/:kbId/chat", async (request, reply) => {
     const auth = await requireAuth(request, reply, services)
     const kb = auth ? await getCompanyKnowledgeBase(services, auth, request.params.kbId, reply) : undefined
@@ -676,6 +753,15 @@ function shouldCreateUploadManifest(
     ...skipped.map((item) => item.relativePath),
   ]
   return skipped.length > 0 || paths.length > 1 || paths.some((item) => item.includes("/"))
+}
+
+function uploadTaskTitle(created: Array<Extract<SourceSaveResult, { accepted: true }>>): string {
+  if (created.length === 1) return `Upload and ingest: ${created[0].source.relativePath}`
+  const paths = created.map((item) => item.source.relativePath)
+  const root = commonFolderPrefix(paths)
+  return root
+    ? `Upload and ingest: ${root} (${created.length} files)`
+    : `Upload and ingest ${created.length} files`
 }
 
 function buildUploadManifest(
@@ -821,6 +907,25 @@ async function verifyJobCompany(
   const kb = await services.repo.getKnowledgeBase(job.kbId)
   if (!kb || (!isPlatformAdmin(auth) && (kb.companyId !== auth.company.id || (kb.visibility === "creator_only" && kb.createdBy !== auth.identity.id)))) {
     reply.code(404).send({ error: "Job not found" })
+    return false
+  }
+  return true
+}
+
+async function verifyTaskCompany(
+  services: AppServices,
+  auth: AuthContext,
+  taskId: string,
+  reply: FastifyReply,
+): Promise<boolean> {
+  const task = await services.repo.getTask(taskId)
+  if (!task) {
+    reply.code(404).send({ error: "Task not found" })
+    return false
+  }
+  const kb = await services.repo.getKnowledgeBase(task.kbId)
+  if (!kb || (!isPlatformAdmin(auth) && (kb.companyId !== auth.company.id || (kb.visibility === "creator_only" && kb.createdBy !== auth.identity.id)))) {
+    reply.code(404).send({ error: "Task not found" })
     return false
   }
   return true

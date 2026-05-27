@@ -4,7 +4,7 @@
   "version": "0.4.14",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node ../scripts/check-dev-port.mjs frontend 1420 VITE_PORT && vite",
     "build": "tsc -p tsconfig.json --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.json --noEmit",

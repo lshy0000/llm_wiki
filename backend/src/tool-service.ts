@@ -1,9 +1,10 @@
 import type { GraphService } from "./graph-service.js"
 import type { ProjectService } from "./project-service.js"
 import type { RetrievalService } from "./retrieval-service.js"
+import { classifySourceBytes } from "./source-formats.js"
 import type { StorageProvider } from "./storage.js"
 import type { CustomHttpToolConfig, ToolConfigState } from "./tool-config-service.js"
-import type { AuthContext, KnowledgeBase } from "./types.js"
+import type { AuthContext, FileTreeNode, KnowledgeBase } from "./types.js"
 import { normalizeStorageKey } from "./wiki-utils.js"
 
 export type ToolScope = "global" | "knowledge_base"
@@ -63,6 +64,11 @@ export interface ToolExecutionContext {
 type ToolArguments = Record<string, unknown>
 type ToolHandler = (context: ToolExecutionContext, args: ToolArguments) => Promise<unknown>
 
+const RAW_LIST_DEFAULT_DEPTH = 2
+const RAW_LIST_MAX_DEPTH = 8
+const RAW_SOURCE_DEFAULT_CHARS = 12000
+const RAW_SOURCE_MAX_CHARS = 64000
+
 interface RegisteredTool {
   definition: ToolDefinition
   handler: ToolHandler
@@ -89,11 +95,12 @@ export class ToolService {
     this.applyConfig(config)
   }
 
-  listDefinitions(input: { kbScoped?: boolean; includeDisabled?: boolean } = {}): ToolDefinition[] {
+  listDefinitions(input: { kbScoped?: boolean; includeDisabled?: boolean; dedicatedKb?: boolean } = {}): ToolDefinition[] {
     return [...this.tools.values()]
       .map((tool) => tool.definition)
       .filter((definition) => input.includeDisabled || definition.enabled)
       .filter((definition) => input.kbScoped || definition.scope === "global")
+      .filter((definition) => !input.dedicatedKb || definition.scope === "knowledge_base")
   }
 
   getDefinition(name: string): ToolDefinition | undefined {
@@ -114,8 +121,8 @@ export class ToolService {
     }
   }
 
-  agentDefinitions(input: { kbScoped?: boolean } = {}): ToolDefinition[] {
-    return this.listDefinitions({ kbScoped: input.kbScoped }).filter((definition) => definition.agentEnabled)
+  agentDefinitions(input: { kbScoped?: boolean; dedicatedKb?: boolean } = {}): ToolDefinition[] {
+    return this.listDefinitions({ kbScoped: input.kbScoped, dedicatedKb: input.dedicatedKb }).filter((definition) => definition.agentEnabled)
   }
 
   applyConfig(config: ToolConfigState): void {
@@ -218,7 +225,7 @@ export class ToolService {
       definition: {
         name: "read_kb_file",
         displayName: "Read KB file",
-        description: "Read a text file from raw/ or wiki/ storage with a size cap.",
+        description: "Read a generated wiki text file with a size cap. Raw source files must use read_raw_source.",
         category: "storage",
         scope: "knowledge_base",
         readOnly: true,
@@ -228,7 +235,7 @@ export class ToolService {
         triggers: ["read", "file", "source", "evidence", "读取", "原文", "依据", "证据"],
         parameters: objectSchema(
           {
-            key: { type: "string", description: "Storage key, for example wiki/index.md." },
+            key: { type: "string", description: "Wiki storage key, for example wiki/index.md." },
             maxBytes: {
               type: "integer",
               description: "Maximum bytes returned from the file.",
@@ -241,6 +248,67 @@ export class ToolService {
         ),
       },
       handler: (context, args) => this.readKbFile(context, args),
+    })
+
+    this.register({
+      definition: {
+        name: "raw_list_files",
+        displayName: "Raw list files",
+        description: "List raw source files under a parent directory in the selected knowledge base.",
+        category: "storage",
+        scope: "knowledge_base",
+        readOnly: true,
+        source: "builtin",
+        enabled: true,
+        agentEnabled: true,
+        triggers: ["rawlistfile", "raw files", "source files", "uploaded files"],
+        parameters: objectSchema({
+          parent: { type: "string", description: "Parent directory below raw/. Pass an empty string for raw/.", default: "" },
+          deep: {
+            type: "integer",
+            description: "Recursive depth. 1 returns direct children only.",
+            default: RAW_LIST_DEFAULT_DEPTH,
+            minimum: 1,
+            maximum: RAW_LIST_MAX_DEPTH,
+          },
+        }),
+      },
+      handler: (context, args) => this.rawListFiles(context, args),
+    })
+
+    this.register({
+      definition: {
+        name: "read_raw_source",
+        displayName: "Read raw source",
+        description: "Read a text/code raw source file by character window. Use only when the original source text is explicitly needed.",
+        category: "storage",
+        scope: "knowledge_base",
+        readOnly: true,
+        source: "builtin",
+        enabled: true,
+        agentEnabled: true,
+        triggers: ["raw source", "source text", "original text", "source code"],
+        parameters: objectSchema(
+          {
+            path: { type: "string", description: "Raw file path. Accepts raw/foo.md or foo.md." },
+            offset: {
+              type: "integer",
+              description: "Character offset where the returned window starts.",
+              default: 0,
+              minimum: 0,
+            },
+            maxChars: {
+              type: "integer",
+              description: "Maximum characters returned.",
+              default: RAW_SOURCE_DEFAULT_CHARS,
+              minimum: 1,
+              maximum: RAW_SOURCE_MAX_CHARS,
+            },
+          },
+          ["path"],
+        ),
+      },
+      handler: (context, args) => this.readRawSource(context, args),
     })
   }
 
@@ -430,11 +498,29 @@ export class ToolService {
     }
   }
 
+  private async rawListFiles(context: ToolExecutionContext, args: ToolArguments): Promise<unknown> {
+    const kb = requireKb(context)
+    const parent = optionalString(args, "parent", "")
+    const deep = optionalInteger(args, "deep", RAW_LIST_DEFAULT_DEPTH, 1, RAW_LIST_MAX_DEPTH)
+    const key = rawStorageKey(parent)
+    const tree = await this.deps.storage.listTree(kb.id, key, deep)
+    const stats = countTree(tree)
+    return {
+      kb: kbSummary(kb),
+      root: "raw",
+      parent: key,
+      deep,
+      totalFiles: stats.files,
+      totalDirectories: stats.directories,
+      tree,
+    }
+  }
+
   private async readKbFile(context: ToolExecutionContext, args: ToolArguments): Promise<unknown> {
     const kb = requireKb(context)
     const key = safeStorageKey(requiredString(args, "key"))
-    if (!key.startsWith("raw/") && !key.startsWith("wiki/")) {
-      throw new ToolError("key must start with raw/ or wiki/")
+    if (!key.startsWith("wiki/")) {
+      throw new ToolError("key must start with wiki/")
     }
     const maxBytes = optionalInteger(args, "maxBytes", 20000, 1, 64000)
     let bytes: Buffer
@@ -450,6 +536,50 @@ export class ToolService {
       bytes: bytes.length,
       truncated: bytes.length > maxBytes,
       content: bytes.subarray(0, maxBytes).toString("utf-8"),
+    }
+  }
+
+  private async readRawSource(context: ToolExecutionContext, args: ToolArguments): Promise<unknown> {
+    const kb = requireKb(context)
+    const key = rawStorageKey(requiredString(args, "path"))
+    const offset = optionalInteger(args, "offset", 0, 0, Number.MAX_SAFE_INTEGER)
+    const maxChars = optionalInteger(args, "maxChars", RAW_SOURCE_DEFAULT_CHARS, 1, RAW_SOURCE_MAX_CHARS)
+    let bytes: Buffer
+    try {
+      bytes = await this.deps.storage.readObject(kb.id, key)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") throw new ToolError("File not found", 404)
+      throw err
+    }
+    const relativePath = key.replace(/^raw\/?/, "")
+    const admission = classifySourceBytes(relativePath, bytes)
+    if (!["text", "markdown", "code"].includes(admission.kind)) {
+      throw new ToolError("Only text/code raw source files can be read", 415)
+    }
+    let text: string
+    try {
+      text = new TextDecoder("utf-8", { fatal: true }).decode(bytes)
+    } catch {
+      throw new ToolError("Raw source file is not valid UTF-8 text", 415)
+    }
+    const total = text.length
+    const start = Math.min(offset, total)
+    const end = Math.min(start + maxChars, total)
+    return {
+      kb: kbSummary(kb),
+      key,
+      path: key,
+      relativePath,
+      kind: admission.kind,
+      bytes: bytes.length,
+      total,
+      unit: "characters",
+      offset: start,
+      end,
+      maxChars,
+      hasMore: end < total,
+      truncated: start > 0 || end < total,
+      content: text.slice(start, end),
     }
   }
 }
@@ -520,6 +650,32 @@ function optionalNumberArray(args: ToolArguments, key: string): number[] | undef
 function normalizeRootedPath(root: "raw" | "wiki", prefix: string): string {
   const cleanPrefix = safeStorageKey(prefix)
   return safeStorageKey(cleanPrefix ? `${root}/${cleanPrefix}` : root)
+}
+
+function rawStorageKey(path: string): string {
+  const cleanPath = safeStorageKey(path)
+  const relativePath = cleanPath === "raw"
+    ? ""
+    : cleanPath.startsWith("raw/")
+      ? cleanPath.slice("raw/".length)
+      : cleanPath
+  return safeStorageKey(relativePath ? `raw/${relativePath}` : "raw")
+}
+
+function countTree(nodes: FileTreeNode[]): { files: number; directories: number } {
+  let files = 0
+  let directories = 0
+  for (const node of nodes) {
+    if (node.isDirectory) {
+      directories += 1
+      const childCounts = countTree(node.children ?? [])
+      files += childCounts.files
+      directories += childCounts.directories
+    } else {
+      files += 1
+    }
+  }
+  return { files, directories }
 }
 
 function safeStorageKey(key: string): string {

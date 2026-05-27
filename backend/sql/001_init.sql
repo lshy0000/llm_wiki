@@ -130,10 +130,34 @@ CREATE TABLE IF NOT EXISTS sources (
 CREATE INDEX IF NOT EXISTS sources_kb_path_idx ON sources(kb_id, relative_path);
 CREATE UNIQUE INDEX IF NOT EXISTS sources_scope_path_uidx ON sources(company_id, kb_id, root, relative_path);
 
+CREATE TABLE IF NOT EXISTS ingest_tasks (
+  id TEXT PRIMARY KEY,
+  company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  kb_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL CHECK (kind IN ('source_ingest')),
+  title TEXT NOT NULL,
+  upload_batch_id TEXT,
+  status TEXT NOT NULL,
+  progress INTEGER NOT NULL,
+  stage TEXT NOT NULL,
+  source_ids TEXT[] NOT NULL DEFAULT '{}',
+  job_ids TEXT[] NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL,
+  started_at TIMESTAMPTZ,
+  completed_at TIMESTAMPTZ,
+  error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS ingest_tasks_kb_created_idx ON ingest_tasks(kb_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS ingest_tasks_company_created_idx ON ingest_tasks(company_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS ingest_tasks_status_created_idx ON ingest_tasks(status, created_at);
+
 CREATE TABLE IF NOT EXISTS ingest_jobs (
   id TEXT PRIMARY KEY,
   company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   kb_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+  task_id TEXT REFERENCES ingest_tasks(id) ON DELETE SET NULL,
   source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
   status TEXT NOT NULL,
   progress INTEGER NOT NULL,
@@ -152,6 +176,8 @@ CREATE TABLE IF NOT EXISTS ingest_jobs (
 
 CREATE INDEX IF NOT EXISTS ingest_jobs_kb_created_idx ON ingest_jobs(kb_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS ingest_jobs_status_created_idx ON ingest_jobs(status, created_at);
+ALTER TABLE ingest_jobs ADD COLUMN IF NOT EXISTS task_id TEXT REFERENCES ingest_tasks(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS ingest_jobs_task_idx ON ingest_jobs(task_id);
 
 CREATE TABLE IF NOT EXISTS wiki_pages (
   id TEXT NOT NULL,
@@ -252,6 +278,57 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 );
 
 CREATE INDEX IF NOT EXISTS chat_messages_conversation_idx ON chat_messages(kb_id, conversation_id, created_at);
+
+CREATE TABLE IF NOT EXISTS agent_conversations (
+  id TEXT PRIMARY KEY,
+  company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  kb_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+  agent_type TEXT NOT NULL CHECK (agent_type IN ('kb_dedicated', 'configurable')),
+  title TEXT NOT NULL,
+  created_by TEXT REFERENCES identities(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS agent_conversations_kb_updated_idx ON agent_conversations(kb_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS agent_conversations_company_updated_idx ON agent_conversations(company_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS agent_runs (
+  id TEXT PRIMARY KEY,
+  company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  kb_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+  conversation_id TEXT NOT NULL REFERENCES agent_conversations(id) ON DELETE CASCADE,
+  user_message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+  assistant_message_id TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
+  agent_type TEXT NOT NULL CHECK (agent_type IN ('kb_dedicated', 'configurable')),
+  status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'cancelled')),
+  model_id TEXT,
+  started_at TIMESTAMPTZ NOT NULL,
+  completed_at TIMESTAMPTZ,
+  error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS agent_runs_conversation_started_idx ON agent_runs(kb_id, conversation_id, started_at);
+CREATE INDEX IF NOT EXISTS agent_runs_status_started_idx ON agent_runs(status, started_at);
+
+CREATE TABLE IF NOT EXISTS agent_run_steps (
+  id TEXT PRIMARY KEY,
+  company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  kb_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+  run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+  ordinal INTEGER NOT NULL,
+  type TEXT NOT NULL CHECK (type IN ('plan', 'tool', 'observation', 'answer', 'error')),
+  title TEXT NOT NULL,
+  detail TEXT NOT NULL,
+  tool_name TEXT,
+  latency_ms INTEGER,
+  input JSONB,
+  output_summary JSONB,
+  created_at TIMESTAMPTZ NOT NULL,
+  UNIQUE (run_id, ordinal)
+);
+
+CREATE INDEX IF NOT EXISTS agent_run_steps_run_ordinal_idx ON agent_run_steps(run_id, ordinal);
 
 CREATE TABLE IF NOT EXISTS ingest_cache (
   company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,

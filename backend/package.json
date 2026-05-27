@@ -4,7 +4,7 @@
   "version": "0.4.14",
   "type": "module",
   "scripts": {
-    "dev": "node ../node_modules/tsx/dist/cli.mjs src/index.ts",
+    "dev": "node ../scripts/check-dev-port.mjs backend 8787 KN_PORT && node ../node_modules/tsx/dist/cli.mjs src/index.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

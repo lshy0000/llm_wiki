@@ -1,4 +1,4 @@
-import type { IngestJob, SourceDocument } from "./types.js"
+import type { BackgroundTask, IngestJob, SourceDocument } from "./types.js"
 import type { KnowledgeRepository } from "./repository.js"
 import type { StorageProvider } from "./storage.js"
 import { classifySourceBytes, isAutoIngestAdmission, sourceContentType, type SourceAdmission } from "./source-formats.js"
@@ -54,30 +54,78 @@ export class SourceService {
       contentType: input.contentType || sourceContentType(admission),
       size: input.bytes.length,
       sha256: sha256(input.bytes),
-      status: shouldQueue ? "queued" : "ingested",
+      status: shouldQueue ? "uploaded" : "ingested",
       folderContext: folderContextFor(relativePath, { root: "raw", uploadBatchId: input.uploadBatchId }),
       createdAt: now,
       updatedAt: now,
     }
     const savedSource = await this.repo.saveSource(source)
-    if (!shouldQueue) return { accepted: true, source: savedSource, admission }
+    return { accepted: true, source: savedSource, admission }
+  }
 
-    const job: IngestJob = {
-      id: id("job"),
+  async createIngestTask(input: {
+    kbId: string
+    uploadBatchId?: string
+    title?: string
+    items: Array<Extract<SourceSaveResult, { accepted: true }>>
+  }): Promise<BackgroundTask> {
+    const kb = await this.repo.getKnowledgeBase(input.kbId)
+    if (!kb) throw new Error("Knowledge base not found")
+    const now = nowIso()
+    const sourceIds = [...new Set(input.items.map((item) => item.source.id))]
+    const queueItems = input.items.filter((item) => isAutoIngestAdmission(item.admission))
+    let task: BackgroundTask = {
+      id: id("tsk"),
       companyId: kb.companyId,
       kbId: input.kbId,
-      sourceId: savedSource.id,
-      status: "queued",
-      progress: 0,
-      stage: "Queued for two-step ingest",
-      attempts: 0,
-      cached: false,
+      kind: "source_ingest",
+      title: input.title ?? `Ingest ${input.items.length} uploaded source${input.items.length === 1 ? "" : "s"}`,
+      uploadBatchId: input.uploadBatchId,
+      status: queueItems.length > 0 ? "queued" : "completed",
+      progress: queueItems.length > 0 ? 0 : 100,
+      stage: queueItems.length > 0 ? "Queued for source ingest" : "Upload accepted; no ingest required",
+      sourceIds,
+      jobIds: [],
       createdAt: now,
       updatedAt: now,
-      writtenPageIds: [],
+      completedAt: queueItems.length > 0 ? undefined : now,
+      sourcePaths: [],
+      jobs: [],
     }
-    await this.repo.saveJob(job)
-    return { accepted: true, source: savedSource, job, admission }
+    task = await this.repo.saveTask(task)
+
+    const jobs: IngestJob[] = []
+    for (const item of queueItems) {
+      await this.repo.saveSource({ ...item.source, status: "queued", updatedAt: now, error: undefined })
+      const job: IngestJob = {
+        id: id("job"),
+        companyId: kb.companyId,
+        kbId: input.kbId,
+        taskId: task.id,
+        sourceId: item.source.id,
+        status: "queued",
+        progress: 0,
+        stage: "Queued by upload task",
+        attempts: 0,
+        cached: false,
+        createdAt: now,
+        updatedAt: now,
+        writtenPageIds: [],
+      }
+      jobs.push(await this.repo.saveJob(job))
+    }
+
+    task = {
+      ...task,
+      jobIds: jobs.map((job) => job.id),
+      jobs,
+      status: jobs.length > 0 ? "queued" : "completed",
+      progress: jobs.length > 0 ? 0 : 100,
+      stage: jobs.length > 0 ? "Queued for source ingest" : "Upload accepted; no ingest required",
+      completedAt: jobs.length > 0 ? undefined : now,
+      updatedAt: now,
+    }
+    return this.repo.saveTask(task)
   }
 
   async registerExisting(input: {
@@ -114,28 +162,19 @@ export class SourceService {
       contentType: input.contentType || sourceContentType(admission),
       size: input.bytes.length,
       sha256: sha256(input.bytes),
-      status: shouldQueue ? "queued" : "ingested",
+      status: shouldQueue ? "uploaded" : "ingested",
       folderContext: folderContextFor(relativePath, { root: "raw" }),
       createdAt: now,
       updatedAt: now,
     }
     const savedSource = await this.repo.saveSource(source)
     if (!shouldQueue) return { accepted: true, source: savedSource, admission }
-    const job: IngestJob = {
-      id: id("job"),
-      companyId: kb.companyId,
+    const task = await this.createIngestTask({
       kbId: input.kbId,
-      sourceId: savedSource.id,
-      status: "queued",
-      progress: 0,
-      stage: "Queued by raw/sources watcher",
-      attempts: 0,
-      cached: false,
-      createdAt: now,
-      updatedAt: now,
-      writtenPageIds: [],
-    }
-    await this.repo.saveJob(job)
+      title: `Raw source ingest: ${relativePath}`,
+      items: [{ accepted: true, source: savedSource, admission }],
+    })
+    const job = task.jobs[0]
     return { accepted: true, source: savedSource, job, admission }
   }
 

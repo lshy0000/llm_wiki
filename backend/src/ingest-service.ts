@@ -38,8 +38,54 @@ export class IngestService {
   }
 
   async enqueueExisting(job: IngestJob): Promise<void> {
-    await this.repo.saveJob({ ...job, status: "queued", stage: "Queued for retry", updatedAt: nowIso() })
+    await this.repo.saveJob({
+      ...job,
+      status: "queued",
+      progress: 0,
+      stage: "Queued for retry",
+      error: undefined,
+      cancelledAt: undefined,
+      completedAt: undefined,
+      updatedAt: nowIso(),
+    })
+    if (job.taskId) await this.repo.refreshTask(job.taskId)
     await this.processQueue()
+  }
+
+  async retryTask(taskId: string): Promise<unknown> {
+    const task = await this.repo.getTask(taskId)
+    if (!task) return undefined
+    const jobs = await this.repo.listJobsByTask(taskId)
+    for (const job of jobs) {
+      if (job.status !== "failed" && job.status !== "cancelled") continue
+      const source = await this.repo.getSource(job.sourceId)
+      if (source) await this.repo.saveSource({ ...source, status: "queued", error: undefined, updatedAt: nowIso() })
+      await this.repo.saveJob({
+        ...job,
+        status: "queued",
+        progress: 0,
+        stage: "Queued for retry",
+        error: undefined,
+        cancelledAt: undefined,
+        completedAt: undefined,
+        updatedAt: nowIso(),
+      })
+    }
+    const refreshed = await this.repo.refreshTask(taskId)
+    await this.processQueue()
+    return refreshed
+  }
+
+  async cancelTask(taskId: string): Promise<unknown> {
+    const task = await this.repo.getTask(taskId)
+    if (!task) return undefined
+    const jobs = await this.repo.listJobsByTask(taskId)
+    for (const job of jobs) {
+      if (job.status === "queued" || job.status === "running") {
+        await this.cancel(job.id)
+      }
+    }
+    return this.repo.refreshTask(taskId)
   }
 
   async cancel(jobId: string): Promise<IngestJob | undefined> {
@@ -48,6 +94,7 @@ export class IngestService {
     this.cancelled.add(jobId)
     const cancelled = { ...job, status: "cancelled" as const, stage: "Cancelled", cancelledAt: nowIso(), updatedAt: nowIso() }
     await this.repo.saveJob(cancelled)
+    if (job.taskId) await this.repo.refreshTask(job.taskId)
     return cancelled
   }
 
@@ -74,10 +121,12 @@ export class IngestService {
       updatedAt: nowIso(),
     }
     await this.repo.saveJob(job)
+    if (job.taskId) await this.repo.refreshTask(job.taskId)
 
     const update = async (patch: Partial<IngestJob>) => {
       job = { ...job, ...patch, updatedAt: nowIso() }
       await this.repo.saveJob(job)
+      if (job.taskId) await this.repo.refreshTask(job.taskId)
     }
 
     try {

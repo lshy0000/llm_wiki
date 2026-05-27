@@ -1,5 +1,6 @@
 export type JobStatus = "queued" | "running" | "completed" | "failed" | "cancelled"
 export type SourceStatus = "uploaded" | "parsing" | "queued" | "ingested" | "failed"
+export type BackgroundTaskKind = "source_ingest"
 export type ReviewStatus = "open" | "resolved" | "dismissed"
 export type CompanyMemberRole = "platform_admin" | "org_admin" | "agent_admin" | "member"
 export type ModelProvider = "openai" | "qwen" | "deepseek" | "kimi" | "claudecode" | "ollama" | "custom"
@@ -121,6 +122,7 @@ export interface IngestJob {
   id: string
   companyId: string
   kbId: string
+  taskId?: string
   sourceId: string
   status: JobStatus
   progress: number
@@ -135,6 +137,27 @@ export interface IngestJob {
   error?: string
   writtenPageIds: string[]
   analysis?: string
+}
+
+export interface BackgroundTask {
+  id: string
+  companyId: string
+  kbId: string
+  kind: BackgroundTaskKind
+  title: string
+  uploadBatchId?: string
+  status: JobStatus
+  progress: number
+  stage: string
+  sourceIds: string[]
+  jobIds: string[]
+  createdAt: string
+  updatedAt: string
+  startedAt?: string
+  completedAt?: string
+  error?: string
+  sourcePaths: string[]
+  jobs: IngestJob[]
 }
 
 export interface WikiPage {
@@ -218,6 +241,59 @@ export interface ChatMessage {
   content: string
   citations: Array<{ pageId: string; title: string; path: string }>
   createdAt: string
+}
+
+export type AgentType = "kb_dedicated" | "configurable"
+export type AgentRunStatus = "running" | "completed" | "failed" | "cancelled"
+export type AgentTraceType = "plan" | "tool" | "observation" | "answer" | "error"
+
+export interface AgentConversation {
+  id: string
+  companyId: string
+  kbId: string
+  agentType: AgentType
+  title: string
+  createdBy: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface AgentRun {
+  id: string
+  companyId: string
+  kbId: string
+  conversationId: string
+  userMessageId: string
+  assistantMessageId?: string
+  agentType: AgentType
+  status: AgentRunStatus
+  modelId?: string
+  startedAt: string
+  completedAt?: string
+  error?: string
+}
+
+export interface AgentTraceStep {
+  id: string
+  type: AgentTraceType
+  title: string
+  detail: string
+  toolName?: string
+  latencyMs?: number
+  input?: unknown
+  outputSummary?: unknown
+}
+
+export interface AgentRunStep extends AgentTraceStep {
+  companyId: string
+  kbId: string
+  runId: string
+  ordinal: number
+  createdAt: string
+}
+
+export interface AgentMessageWithTrace extends ChatMessage {
+  trace?: AgentTraceStep[]
 }
 
 export interface SearchResult {

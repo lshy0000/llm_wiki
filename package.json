@@ -12,7 +12,7 @@
     "preview": "npm run preview -w @llm-wiki/frontend",
     "server:dev": "npm run dev -w @llm-wiki/backend",
     "server:typecheck": "npm run typecheck -w @llm-wiki/backend",
-    "dev:all": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"Start-Process powershell -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-Command','npm run server:dev' -WindowStyle Hidden; npm run dev\"",
+    "dev:all": "node scripts/dev-all.mjs",
     "typecheck": "npm run typecheck -w @llm-wiki/frontend && npm run typecheck -w @llm-wiki/backend",
     "test": "npm run test:mocks && npm run test:llm",
     "test:mocks": "npm run test:mocks -w @llm-wiki/frontend",

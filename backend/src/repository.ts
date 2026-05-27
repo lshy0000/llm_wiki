@@ -3,8 +3,12 @@ import { fileURLToPath } from "node:url"
 import pg from "pg"
 import type { Pool as PgPool, PoolClient } from "pg"
 import type {
+  AgentConversation,
+  AgentRun,
+  AgentRunStep,
   AuthContext,
   AuthSession,
+  BackgroundTask,
   ChatMessage,
   Company,
   CompanyModel,
@@ -81,9 +85,14 @@ export interface KnowledgeRepository {
   saveSource(source: SourceDocument): Promise<SourceDocument>
   listSources(kbId: string): Promise<SourceDocument[]>
   getSource(sourceId: string): Promise<SourceDocument | undefined>
+  saveTask(task: BackgroundTask): Promise<BackgroundTask>
+  listTasks(input?: { kbId?: string; companyId?: string }): Promise<BackgroundTask[]>
+  getTask(taskId: string): Promise<BackgroundTask | undefined>
+  refreshTask(taskId: string): Promise<BackgroundTask | undefined>
   saveJob(job: IngestJob): Promise<IngestJob>
   listJobs(kbId?: string): Promise<IngestJob[]>
   getJob(jobId: string): Promise<IngestJob | undefined>
+  listJobsByTask(taskId: string): Promise<IngestJob[]>
   listQueuedJobs(): Promise<IngestJob[]>
   upsertPage(page: WikiPage): Promise<WikiPage>
   listPages(kbId: string): Promise<WikiPage[]>
@@ -100,6 +109,13 @@ export interface KnowledgeRepository {
   addReview(review: ReviewItem): Promise<ReviewItem>
   listReviews(kbId: string): Promise<ReviewItem[]>
   updateReviewStatus(kbId: string, reviewId: string, status: ReviewItem["status"]): Promise<ReviewItem | undefined>
+  saveAgentConversation(conversation: AgentConversation): Promise<AgentConversation>
+  listAgentConversations(kbId: string): Promise<AgentConversation[]>
+  getAgentConversation(kbId: string, conversationId: string): Promise<AgentConversation | undefined>
+  saveAgentRun(run: AgentRun): Promise<AgentRun>
+  listAgentRunsByConversation(kbId: string, conversationId: string): Promise<AgentRun[]>
+  addAgentRunStep(step: AgentRunStep): Promise<AgentRunStep>
+  listAgentRunStepsByRunIds(runIds: string[]): Promise<AgentRunStep[]>
   addChatMessage(message: ChatMessage): Promise<ChatMessage>
   listChatMessages(kbId: string, conversationId: string): Promise<ChatMessage[]>
   getIngestCache(kbId: string, sourceId: string): Promise<{ sourceHash: string; pageIds: string[] } | undefined>
@@ -162,6 +178,10 @@ export class PostgresRepository implements KnowledgeRepository {
     await this.ensureDefaultCompany()
     await this.pool.query(
       "UPDATE ingest_jobs SET status = 'queued', stage = 'Recovered after server restart', updated_at = $1 WHERE status IN ('running', 'queued')",
+      [nowIso()],
+    )
+    await this.pool.query(
+      "UPDATE ingest_tasks SET status = 'queued', stage = 'Recovered after server restart', updated_at = $1 WHERE status IN ('running', 'queued')",
       [nowIso()],
     )
     await this.pool.query("DELETE FROM auth_sessions WHERE expires_at <= now()")
@@ -270,9 +290,33 @@ export class PostgresRepository implements KnowledgeRepository {
       ALTER TABLE sources DROP CONSTRAINT IF EXISTS sources_root_check;
       ALTER TABLE sources ADD CONSTRAINT sources_root_check CHECK (root IN ('raw', 'wiki'));
 
+      CREATE TABLE IF NOT EXISTS ingest_tasks (
+        id TEXT PRIMARY KEY,
+        company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        kb_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK (kind IN ('source_ingest')),
+        title TEXT NOT NULL,
+        upload_batch_id TEXT,
+        status TEXT NOT NULL,
+        progress INTEGER NOT NULL,
+        stage TEXT NOT NULL,
+        source_ids TEXT[] NOT NULL DEFAULT '{}',
+        job_ids TEXT[] NOT NULL DEFAULT '{}',
+        created_at TIMESTAMPTZ NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL,
+        started_at TIMESTAMPTZ,
+        completed_at TIMESTAMPTZ,
+        error TEXT
+      );
+      CREATE INDEX IF NOT EXISTS ingest_tasks_kb_created_idx ON ingest_tasks(kb_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS ingest_tasks_company_created_idx ON ingest_tasks(company_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS ingest_tasks_status_created_idx ON ingest_tasks(status, created_at);
+
       ALTER TABLE ingest_jobs ADD COLUMN IF NOT EXISTS company_id TEXT REFERENCES companies(id) ON DELETE CASCADE;
+      ALTER TABLE ingest_jobs ADD COLUMN IF NOT EXISTS task_id TEXT REFERENCES ingest_tasks(id) ON DELETE SET NULL;
       UPDATE ingest_jobs j SET company_id = kb.company_id FROM knowledge_bases kb WHERE j.kb_id = kb.id AND j.company_id IS NULL;
       ALTER TABLE ingest_jobs ALTER COLUMN company_id SET NOT NULL;
+      CREATE INDEX IF NOT EXISTS ingest_jobs_task_idx ON ingest_jobs(task_id);
 
       ALTER TABLE wiki_pages ADD COLUMN IF NOT EXISTS company_id TEXT REFERENCES companies(id) ON DELETE CASCADE;
       UPDATE wiki_pages p SET company_id = kb.company_id FROM knowledge_bases kb WHERE p.kb_id = kb.id AND p.company_id IS NULL;
@@ -301,6 +345,54 @@ export class PostgresRepository implements KnowledgeRepository {
       ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS company_id TEXT REFERENCES companies(id) ON DELETE CASCADE;
       UPDATE chat_messages c SET company_id = kb.company_id FROM knowledge_bases kb WHERE c.kb_id = kb.id AND c.company_id IS NULL;
       ALTER TABLE chat_messages ALTER COLUMN company_id SET NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS agent_conversations (
+        id TEXT PRIMARY KEY,
+        company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        kb_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+        agent_type TEXT NOT NULL CHECK (agent_type IN ('kb_dedicated', 'configurable')),
+        title TEXT NOT NULL,
+        created_by TEXT REFERENCES identities(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS agent_conversations_kb_updated_idx ON agent_conversations(kb_id, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS agent_conversations_company_updated_idx ON agent_conversations(company_id, updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS agent_runs (
+        id TEXT PRIMARY KEY,
+        company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        kb_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+        conversation_id TEXT NOT NULL REFERENCES agent_conversations(id) ON DELETE CASCADE,
+        user_message_id TEXT NOT NULL REFERENCES chat_messages(id) ON DELETE CASCADE,
+        assistant_message_id TEXT REFERENCES chat_messages(id) ON DELETE SET NULL,
+        agent_type TEXT NOT NULL CHECK (agent_type IN ('kb_dedicated', 'configurable')),
+        status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'cancelled')),
+        model_id TEXT,
+        started_at TIMESTAMPTZ NOT NULL,
+        completed_at TIMESTAMPTZ,
+        error TEXT
+      );
+      CREATE INDEX IF NOT EXISTS agent_runs_conversation_started_idx ON agent_runs(kb_id, conversation_id, started_at);
+      CREATE INDEX IF NOT EXISTS agent_runs_status_started_idx ON agent_runs(status, started_at);
+
+      CREATE TABLE IF NOT EXISTS agent_run_steps (
+        id TEXT PRIMARY KEY,
+        company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        kb_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+        run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE,
+        ordinal INTEGER NOT NULL,
+        type TEXT NOT NULL CHECK (type IN ('plan', 'tool', 'observation', 'answer', 'error')),
+        title TEXT NOT NULL,
+        detail TEXT NOT NULL,
+        tool_name TEXT,
+        latency_ms INTEGER,
+        input JSONB,
+        output_summary JSONB,
+        created_at TIMESTAMPTZ NOT NULL,
+        UNIQUE (run_id, ordinal)
+      );
+      CREATE INDEX IF NOT EXISTS agent_run_steps_run_ordinal_idx ON agent_run_steps(run_id, ordinal);
 
       ALTER TABLE ingest_cache ADD COLUMN IF NOT EXISTS company_id TEXT REFERENCES companies(id) ON DELETE CASCADE;
       UPDATE ingest_cache ic SET company_id = kb.company_id FROM knowledge_bases kb WHERE ic.kb_id = kb.id AND ic.company_id IS NULL;
@@ -786,14 +878,87 @@ export class PostgresRepository implements KnowledgeRepository {
     return result.rows[0] ? this.mapSource(result.rows[0]) : undefined
   }
 
+  async saveTask(task: BackgroundTask): Promise<BackgroundTask> {
+    const result = await this.pool.query<Row>(
+      `INSERT INTO ingest_tasks
+         (id, company_id, kb_id, kind, title, upload_batch_id, status, progress, stage,
+          source_ids, job_ids, created_at, updated_at, started_at, completed_at, error)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+       ON CONFLICT (id)
+       DO UPDATE SET title = EXCLUDED.title,
+                     upload_batch_id = EXCLUDED.upload_batch_id,
+                     status = EXCLUDED.status,
+                     progress = EXCLUDED.progress,
+                     stage = EXCLUDED.stage,
+                     source_ids = EXCLUDED.source_ids,
+                     job_ids = EXCLUDED.job_ids,
+                     updated_at = EXCLUDED.updated_at,
+                     started_at = EXCLUDED.started_at,
+                     completed_at = EXCLUDED.completed_at,
+                     error = EXCLUDED.error
+       RETURNING *`,
+      [
+        task.id,
+        task.companyId,
+        task.kbId,
+        task.kind,
+        task.title,
+        task.uploadBatchId ?? null,
+        task.status,
+        task.progress,
+        task.stage,
+        task.sourceIds,
+        task.jobIds,
+        task.createdAt,
+        task.updatedAt,
+        task.startedAt ?? null,
+        task.completedAt ?? null,
+        task.error ?? null,
+      ],
+    )
+    return this.hydrateTask(this.mapTask(result.rows[0]))
+  }
+
+  async listTasks(input: { kbId?: string; companyId?: string } = {}): Promise<BackgroundTask[]> {
+    const conditions: string[] = []
+    const values: string[] = []
+    if (input.kbId) {
+      values.push(input.kbId)
+      conditions.push(`kb_id = $${values.length}`)
+    }
+    if (input.companyId) {
+      values.push(input.companyId)
+      conditions.push(`company_id = $${values.length}`)
+    }
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : ""
+    const result = await this.pool.query<Row>(
+      `SELECT * FROM ingest_tasks ${where} ORDER BY created_at DESC`,
+      values,
+    )
+    return Promise.all(result.rows.map((row) => this.hydrateTask(this.mapTask(row))))
+  }
+
+  async getTask(taskId: string): Promise<BackgroundTask | undefined> {
+    const result = await this.pool.query<Row>("SELECT * FROM ingest_tasks WHERE id = $1", [taskId])
+    return result.rows[0] ? this.hydrateTask(this.mapTask(result.rows[0])) : undefined
+  }
+
+  async refreshTask(taskId: string): Promise<BackgroundTask | undefined> {
+    const task = await this.getTask(taskId)
+    if (!task) return undefined
+    const summary = this.summarizeTask(task)
+    return this.saveTask({ ...task, ...summary })
+  }
+
   async saveJob(job: IngestJob): Promise<IngestJob> {
     const result = await this.pool.query<Row>(
       `INSERT INTO ingest_jobs
-         (id, company_id, kb_id, source_id, status, progress, stage, attempts, cached, created_at, updated_at,
-          started_at, completed_at, cancelled_at, error, written_page_ids, analysis)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+         (id, company_id, kb_id, task_id, source_id, status, progress, stage, attempts, cached, created_at, updated_at,
+           started_at, completed_at, cancelled_at, error, written_page_ids, analysis)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
        ON CONFLICT (id)
        DO UPDATE SET status = EXCLUDED.status,
+                     task_id = EXCLUDED.task_id,
                      progress = EXCLUDED.progress,
                      stage = EXCLUDED.stage,
                      attempts = EXCLUDED.attempts,
@@ -810,6 +975,7 @@ export class PostgresRepository implements KnowledgeRepository {
         job.id,
         job.companyId,
         job.kbId,
+        job.taskId ?? null,
         job.sourceId,
         job.status,
         job.progress,
@@ -839,6 +1005,11 @@ export class PostgresRepository implements KnowledgeRepository {
   async getJob(jobId: string): Promise<IngestJob | undefined> {
     const result = await this.pool.query<Row>("SELECT * FROM ingest_jobs WHERE id = $1", [jobId])
     return result.rows[0] ? this.mapJob(result.rows[0]) : undefined
+  }
+
+  async listJobsByTask(taskId: string): Promise<IngestJob[]> {
+    const result = await this.pool.query<Row>("SELECT * FROM ingest_jobs WHERE task_id = $1 ORDER BY created_at", [taskId])
+    return result.rows.map((row) => this.mapJob(row))
   }
 
   async listQueuedJobs(): Promise<IngestJob[]> {
@@ -1054,6 +1225,119 @@ export class PostgresRepository implements KnowledgeRepository {
     return result.rows[0] ? this.mapReview(result.rows[0]) : undefined
   }
 
+  async saveAgentConversation(conversation: AgentConversation): Promise<AgentConversation> {
+    const result = await this.pool.query<Row>(
+      `INSERT INTO agent_conversations
+         (id, company_id, kb_id, agent_type, title, created_by, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (id)
+       DO UPDATE SET title = COALESCE(NULLIF(agent_conversations.title, ''), EXCLUDED.title),
+                     updated_at = EXCLUDED.updated_at
+       RETURNING *`,
+      [
+        conversation.id,
+        conversation.companyId,
+        conversation.kbId,
+        conversation.agentType,
+        conversation.title,
+        conversation.createdBy,
+        conversation.createdAt,
+        conversation.updatedAt,
+      ],
+    )
+    return this.mapAgentConversation(result.rows[0])
+  }
+
+  async listAgentConversations(kbId: string): Promise<AgentConversation[]> {
+    const result = await this.pool.query<Row>(
+      "SELECT * FROM agent_conversations WHERE kb_id = $1 ORDER BY updated_at DESC",
+      [kbId],
+    )
+    return result.rows.map((row) => this.mapAgentConversation(row))
+  }
+
+  async getAgentConversation(kbId: string, conversationId: string): Promise<AgentConversation | undefined> {
+    const result = await this.pool.query<Row>(
+      "SELECT * FROM agent_conversations WHERE kb_id = $1 AND id = $2",
+      [kbId, conversationId],
+    )
+    return result.rows[0] ? this.mapAgentConversation(result.rows[0]) : undefined
+  }
+
+  async saveAgentRun(run: AgentRun): Promise<AgentRun> {
+    const result = await this.pool.query<Row>(
+      `INSERT INTO agent_runs
+         (id, company_id, kb_id, conversation_id, user_message_id, assistant_message_id,
+          agent_type, status, model_id, started_at, completed_at, error)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       ON CONFLICT (id)
+       DO UPDATE SET assistant_message_id = EXCLUDED.assistant_message_id,
+                     status = EXCLUDED.status,
+                     model_id = EXCLUDED.model_id,
+                     completed_at = EXCLUDED.completed_at,
+                     error = EXCLUDED.error
+       RETURNING *`,
+      [
+        run.id,
+        run.companyId,
+        run.kbId,
+        run.conversationId,
+        run.userMessageId,
+        run.assistantMessageId ?? null,
+        run.agentType,
+        run.status,
+        run.modelId ?? null,
+        run.startedAt,
+        run.completedAt ?? null,
+        run.error ?? null,
+      ],
+    )
+    return this.mapAgentRun(result.rows[0])
+  }
+
+  async listAgentRunsByConversation(kbId: string, conversationId: string): Promise<AgentRun[]> {
+    const result = await this.pool.query<Row>(
+      "SELECT * FROM agent_runs WHERE kb_id = $1 AND conversation_id = $2 ORDER BY started_at",
+      [kbId, conversationId],
+    )
+    return result.rows.map((row) => this.mapAgentRun(row))
+  }
+
+  async addAgentRunStep(step: AgentRunStep): Promise<AgentRunStep> {
+    const result = await this.pool.query<Row>(
+      `INSERT INTO agent_run_steps
+         (id, company_id, kb_id, run_id, ordinal, type, title, detail, tool_name,
+          latency_ms, input, output_summary, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13)
+       RETURNING *`,
+      [
+        step.id,
+        step.companyId,
+        step.kbId,
+        step.runId,
+        step.ordinal,
+        step.type,
+        step.title,
+        step.detail,
+        step.toolName ?? null,
+        step.latencyMs ?? null,
+        step.input === undefined ? null : JSON.stringify(step.input),
+        step.outputSummary === undefined ? null : JSON.stringify(step.outputSummary),
+        step.createdAt,
+      ],
+    )
+    return this.mapAgentRunStep(result.rows[0])
+  }
+
+  async listAgentRunStepsByRunIds(runIds: string[]): Promise<AgentRunStep[]> {
+    if (runIds.length === 0) return []
+    const result = await this.pool.query<Row>(
+      "SELECT * FROM agent_run_steps WHERE run_id = ANY($1) ORDER BY run_id, ordinal",
+      [runIds],
+    )
+    return result.rows.map((row) => this.mapAgentRunStep(row))
+  }
+
   async addChatMessage(message: ChatMessage): Promise<ChatMessage> {
     const result = await this.pool.query<Row>(
       `INSERT INTO chat_messages (id, company_id, kb_id, conversation_id, role, content, citations, created_at)
@@ -1232,11 +1516,127 @@ export class PostgresRepository implements KnowledgeRepository {
     }
   }
 
+  private mapTask(row: Row): BackgroundTask {
+    return {
+      id: String(row.id),
+      companyId: String(row.company_id),
+      kbId: String(row.kb_id),
+      kind: String(row.kind) as BackgroundTask["kind"],
+      title: String(row.title),
+      uploadBatchId: row.upload_batch_id ? String(row.upload_batch_id) : undefined,
+      status: String(row.status) as BackgroundTask["status"],
+      progress: Number(row.progress),
+      stage: String(row.stage),
+      sourceIds: textArray(row.source_ids),
+      jobIds: textArray(row.job_ids),
+      createdAt: iso(row.created_at),
+      updatedAt: iso(row.updated_at),
+      startedAt: optionalIso(row.started_at),
+      completedAt: optionalIso(row.completed_at),
+      error: row.error ? String(row.error) : undefined,
+      sourcePaths: [],
+      jobs: [],
+    }
+  }
+
+  private async hydrateTask(task: BackgroundTask): Promise<BackgroundTask> {
+    const [sourceRows, jobs] = await Promise.all([
+      task.sourceIds.length > 0
+        ? this.pool.query<Row>(
+            "SELECT id, relative_path FROM sources WHERE id = ANY($1) ORDER BY relative_path",
+            [task.sourceIds],
+          )
+        : Promise.resolve({ rows: [] as Row[] }),
+      this.listJobsByTask(task.id),
+    ])
+    return {
+      ...task,
+      sourcePaths: sourceRows.rows.map((row) => String(row.relative_path)),
+      jobs,
+    }
+  }
+
+  private summarizeTask(task: BackgroundTask): Partial<BackgroundTask> {
+    const jobs = task.jobs
+    const now = nowIso()
+    if (jobs.length === 0) {
+      return {
+        status: "completed",
+        progress: 100,
+        stage: "Upload accepted; no ingest required",
+        completedAt: task.completedAt ?? now,
+        updatedAt: now,
+        error: undefined,
+      }
+    }
+
+    const running = jobs.find((job) => job.status === "running")
+    const queued = jobs.find((job) => job.status === "queued")
+    const failed = jobs.filter((job) => job.status === "failed")
+    const cancelled = jobs.filter((job) => job.status === "cancelled")
+    const completed = jobs.filter((job) => job.status === "completed")
+    const progress = Math.round(jobs.reduce((sum, job) => sum + job.progress, 0) / jobs.length)
+
+    if (running) {
+      return {
+        status: "running",
+        progress,
+        stage: running.stage,
+        startedAt: task.startedAt ?? running.startedAt ?? now,
+        updatedAt: now,
+        completedAt: undefined,
+        error: undefined,
+      }
+    }
+    if (queued) {
+      return {
+        status: "queued",
+        progress,
+        stage: queued.stage,
+        updatedAt: now,
+        completedAt: undefined,
+        error: undefined,
+      }
+    }
+    if (failed.length > 0) {
+      return {
+        status: "failed",
+        progress,
+        stage: `${failed.length}/${jobs.length} ingest jobs failed`,
+        updatedAt: now,
+        completedAt: undefined,
+        error: failed.map((job) => job.error).filter(Boolean).join("\n") || undefined,
+      }
+    }
+    if (cancelled.length > 0) {
+      return {
+        status: "cancelled",
+        progress,
+        stage: `${cancelled.length}/${jobs.length} ingest jobs cancelled`,
+        updatedAt: now,
+        completedAt: undefined,
+        error: cancelled.map((job) => job.error).filter(Boolean).join("\n") || undefined,
+      }
+    }
+    if (completed.length === jobs.length) {
+      return {
+        status: "completed",
+        progress: 100,
+        stage: "Completed",
+        completedAt: task.completedAt ?? now,
+        updatedAt: now,
+        error: undefined,
+      }
+    }
+    return { status: task.status, progress, updatedAt: now }
+  }
+
   private mapJob(row: Row): IngestJob {
     return {
       id: String(row.id),
       companyId: String(row.company_id),
       kbId: String(row.kb_id),
+      taskId: row.task_id ? String(row.task_id) : undefined,
       sourceId: String(row.source_id),
       status: String(row.status) as IngestJob["status"],
       progress: Number(row.progress),
@@ -1316,6 +1716,54 @@ export class PostgresRepository implements KnowledgeRepository {
       status: String(row.status) as ReviewItem["status"],
       createdAt: iso(row.created_at),
       updatedAt: iso(row.updated_at),
+    }
+  }
+
+  private mapAgentConversation(row: Row): AgentConversation {
+    return {
+      id: String(row.id),
+      companyId: String(row.company_id),
+      kbId: String(row.kb_id),
+      agentType: String(row.agent_type) as AgentConversation["agentType"],
+      title: String(row.title),
+      createdBy: String(row.created_by ?? ""),
+      createdAt: iso(row.created_at),
+      updatedAt: iso(row.updated_at),
+    }
+  }
+
+  private mapAgentRun(row: Row): AgentRun {
+    return {
+      id: String(row.id),
+      companyId: String(row.company_id),
+      kbId: String(row.kb_id),
+      conversationId: String(row.conversation_id),
+      userMessageId: String(row.user_message_id),
+      assistantMessageId: row.assistant_message_id ? String(row.assistant_message_id) : undefined,
+      agentType: String(row.agent_type) as AgentRun["agentType"],
+      status: String(row.status) as AgentRun["status"],
+      modelId: row.model_id ? String(row.model_id) : undefined,
+      startedAt: iso(row.started_at),
+      completedAt: optionalIso(row.completed_at),
+      error: row.error ? String(row.error) : undefined,
+    }
+  }
+
+  private mapAgentRunStep(row: Row): AgentRunStep {
+    return {
+      id: String(row.id),
+      companyId: String(row.company_id),
+      kbId: String(row.kb_id),
+      runId: String(row.run_id),
+      ordinal: Number(row.ordinal),
+      type: String(row.type) as AgentRunStep["type"],
+      title: String(row.title),
+      detail: String(row.detail),
+      toolName: row.tool_name ? String(row.tool_name) : undefined,
+      latencyMs: row.latency_ms === null || row.latency_ms === undefined ? undefined : Number(row.latency_ms),
+      input: row.input ?? undefined,
+      outputSummary: row.output_summary ?? undefined,
+      createdAt: iso(row.created_at),
     }
   }
 

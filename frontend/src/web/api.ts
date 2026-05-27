@@ -1,5 +1,8 @@
 import type {
   AuthPayload,
+  AgentConversation,
+  AgentConversationDetail,
+  BackgroundTask,
   Capabilities,
   ChatResponse,
   CompanyModel,
@@ -150,6 +153,41 @@ export const api = {
       body: form,
     })
   },
+  uploadFilesWithProgress: (
+    kbId: string,
+    files: Array<{ file: File; relativePath: string }>,
+    onProgress: (progress: number) => void,
+  ) =>
+    new Promise<SourceUploadResponse>((resolve, reject) => {
+      const form = new FormData()
+      for (const item of files) {
+        form.append("relativePath", item.relativePath)
+        form.append("file", item.file, item.relativePath)
+      }
+      const xhr = new XMLHttpRequest()
+      xhr.open("POST", `${API_BASE}/api/kbs/${encodeURIComponent(kbId)}/sources`)
+      const token = getAuthToken()
+      if (token) xhr.setRequestHeader("authorization", `Bearer ${token}`)
+      xhr.upload.onprogress = (event) => {
+        if (!event.lengthComputable || event.total <= 0) return
+        onProgress(Math.min(99, Math.round((event.loaded / event.total) * 100)))
+      }
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          onProgress(100)
+          try {
+            resolve(JSON.parse(xhr.responseText) as SourceUploadResponse)
+          } catch (err) {
+            reject(err)
+          }
+          return
+        }
+        reject(new Error(xhr.responseText || `HTTP ${xhr.status}`))
+      }
+      xhr.onerror = () => reject(new Error("Upload failed"))
+      xhr.onabort = () => reject(new Error("Upload aborted"))
+      xhr.send(form)
+    }),
   uploadFile: (kbId: string, file: File, relativePath: string) => {
     const form = new FormData()
     form.append("relativePath", relativePath)
@@ -161,8 +199,12 @@ export const api = {
   },
   listSources: (kbId: string) => request<SourceDocument[]>(`/api/kbs/${kbId}/sources`),
   listJobs: (kbId: string) => request<IngestJob[]>(`/api/kbs/${kbId}/jobs`),
+  listTasks: (kbId?: string) =>
+    request<BackgroundTask[]>(kbId ? `/api/kbs/${encodeURIComponent(kbId)}/tasks` : "/api/tasks"),
   cancelJob: (jobId: string) => request<IngestJob | undefined>(`/api/jobs/${jobId}/cancel`, { method: "POST" }),
   retryJob: (jobId: string) => request<IngestJob | undefined>(`/api/jobs/${jobId}/retry`, { method: "POST" }),
+  cancelTask: (taskId: string) => request<BackgroundTask | undefined>(`/api/tasks/${encodeURIComponent(taskId)}/cancel`, { method: "POST" }),
+  retryTask: (taskId: string) => request<BackgroundTask | undefined>(`/api/tasks/${encodeURIComponent(taskId)}/retry`, { method: "POST" }),
   fileTree: (kbId: string, root: "raw" | "wiki") => request<FileTreeNode[]>(`/api/kbs/${kbId}/files?root=${root}`),
   wikiTree: (kbId: string) => request<WikiTreeGroup[]>(`/api/kbs/${kbId}/wiki/tree`),
   wikiPage: (kbId: string, pageId: string) => request<WikiPage>(`/api/kbs/${kbId}/wiki/pages/${pageId}`),
@@ -195,6 +237,10 @@ export const api = {
     request<{ ok: boolean }>(`/api/kbs/${kbId}/retrieval/reindex`, { method: "POST" }),
   graph: (kbId: string) => request<GraphResponse>(`/api/kbs/${kbId}/graph`),
   graphInsights: (kbId: string) => request<ReviewItem[]>(`/api/kbs/${kbId}/graph/insights`, { method: "POST" }),
+  listConversations: (kbId: string) =>
+    request<AgentConversation[]>(`/api/kbs/${encodeURIComponent(kbId)}/conversations`),
+  conversationDetail: (kbId: string, conversationId: string) =>
+    request<AgentConversationDetail>(`/api/kbs/${encodeURIComponent(kbId)}/conversations/${encodeURIComponent(conversationId)}`),
   chat: (kbId: string, question: string, conversationId?: string) =>
     request<ChatResponse>(`/api/kbs/${kbId}/chat`, {
       method: "POST",

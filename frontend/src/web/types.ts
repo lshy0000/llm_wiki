@@ -116,6 +116,7 @@ export interface SourceUploadSkipped {
 export interface SourceUploadResponse {
   created: SourceUploadAccepted[]
   skipped: SourceUploadSkipped[]
+  task?: BackgroundTask
 }
 
 export type ModelProvider = "openai" | "qwen" | "deepseek" | "kimi" | "claudecode" | "ollama" | "custom"
@@ -153,6 +154,7 @@ export interface ModelProviderTestResult {
 
 export interface IngestJob {
   id: string
+  taskId?: string
   sourceId: string
   status: string
   progress: number
@@ -162,6 +164,27 @@ export interface IngestJob {
   error?: string
   writtenPageIds: string[]
   updatedAt: string
+}
+
+export interface BackgroundTask {
+  id: string
+  companyId: string
+  kbId: string
+  kind: "source_ingest"
+  title: string
+  uploadBatchId?: string
+  status: "queued" | "running" | "completed" | "failed" | "cancelled"
+  progress: number
+  stage: string
+  sourceIds: string[]
+  jobIds: string[]
+  createdAt: string
+  updatedAt: string
+  startedAt?: string
+  completedAt?: string
+  error?: string
+  sourcePaths: string[]
+  jobs: IngestJob[]
 }
 
 export interface ImageAsset {
@@ -301,7 +324,7 @@ export interface ToolRunResponse<T = unknown> {
   result: T
 }
 
-export type AgentTraceType = "plan" | "tool" | "observation" | "answer"
+export type AgentTraceType = "plan" | "tool" | "observation" | "answer" | "error"
 
 export interface AgentTraceStep {
   id: string
@@ -325,6 +348,41 @@ export interface ChatResponse {
   answer: string
   citations: ChatCitation[]
   trace: AgentTraceStep[]
+}
+
+export interface AgentConversation {
+  id: string
+  companyId: string
+  kbId: string
+  agentType: "kb_dedicated" | "configurable"
+  title: string
+  createdBy: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface AgentChatMessage {
+  id: string
+  companyId: string
+  kbId: string
+  conversationId: string
+  role: "user" | "assistant"
+  content: string
+  citations: ChatCitation[]
+  trace?: AgentTraceStep[]
+  createdAt: string
+}
+
+export interface AgentConversationDetail {
+  conversation: AgentConversation
+  messages: AgentChatMessage[]
+  runs: Array<{
+    id: string
+    status: string
+    startedAt: string
+    completedAt?: string
+    error?: string
+  }>
 }
 
 export interface GraphResponse {

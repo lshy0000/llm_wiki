@@ -4,11 +4,13 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import {
   ArrowLeft,
+  AlertCircle,
   Bot,
   Brain,
   CheckCircle2,
   ChevronUp,
   ClipboardList,
+  Clock,
   Download,
   FileSearch,
   FileText,
@@ -32,14 +34,15 @@ import { API_BASE, api, getAuthToken } from "@/web/api"
 import {
   KB_TYPE_LABEL,
   sortFileTreeNodes,
+  type AgentConversation,
   type AgentTraceStep,
+  type BackgroundTask,
   type Capabilities,
   type ChatCitation,
   type CompanyModel,
   type CustomHttpToolConfig,
   type FileTreeNode,
   type GraphResponse,
-  type IngestJob,
   type KnowledgeBase,
   type ReviewItem,
   type SearchResult,
@@ -323,23 +326,32 @@ function SourcesPanel({ kbId }: { kbId: string }) {
   const [rawTree, setRawTree] = useState<FileTreeNode[]>([])
   const [wikiTree, setWikiTree] = useState<FileTreeNode[]>([])
   const [sources, setSources] = useState<SourceDocument[]>([])
-  const [jobs, setJobs] = useState<IngestJob[]>([])
+  const [tasks, setTasks] = useState<BackgroundTask[]>([])
   const [uploading, setUploading] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState(0)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const [taskLoadError, setTaskLoadError] = useState<string | null>(null)
+  const [uploadTargetPath, setUploadTargetPath] = useState("")
   const [selectedFile, setSelectedFile] = useState<FileSelection | null>(null)
   const [fileLoading, setFileLoading] = useState(false)
   const [fileError, setFileError] = useState<string | null>(null)
 
   const load = async () => {
-    const [raw, wiki, sourceList, jobList] = await Promise.all([
+    const [raw, wiki, sourceList] = await Promise.all([
       api.fileTree(kbId, "raw"),
       api.fileTree(kbId, "wiki"),
       api.listSources(kbId),
-      api.listJobs(kbId),
     ])
     setRawTree(sortFileTreeNodes(raw))
     setWikiTree(sortFileTreeNodes(wiki))
     setSources(sourceList)
-    setJobs(jobList)
+    try {
+      setTasks(await api.listTasks(kbId))
+      setTaskLoadError(null)
+    } catch (err) {
+      setTaskLoadError(err instanceof Error ? err.message : String(err))
+      setTasks([])
+    }
   }
 
   useEffect(() => {
@@ -366,10 +378,12 @@ function SourcesPanel({ kbId }: { kbId: string }) {
   }, [kbId])
 
   const upload = async (files: FileList | null) => {
+    if (uploading) return
     if (!files || files.length === 0) return
+    const targetPrefix = uploadTargetPath ? `${uploadTargetPath}/` : ""
     const uploadItems = Array.from(files).map((file) => ({
       file,
-      relativePath: normalizeClientRelativePath((file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name),
+      relativePath: normalizeClientRelativePath(`${targetPrefix}${(file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name}`),
     }))
     const existingByPath = new Map(
       sources
@@ -393,13 +407,19 @@ function SourcesPanel({ kbId }: { kbId: string }) {
     }
     if (acceptedItems.length === 0) return
     setUploading(true)
+    setUploadProgress(0)
+    setUploadError(null)
     try {
-      await api.uploadFiles(kbId, acceptedItems)
+      await api.uploadFilesWithProgress(kbId, acceptedItems, setUploadProgress)
       await load()
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : String(err))
     } finally {
       setUploading(false)
     }
   }
+
+  const selectedTargetLabel = uploadTargetPath ? `raw/${uploadTargetPath}` : "raw/"
 
   const folderInputProps = {
     webkitdirectory: "",
@@ -439,20 +459,54 @@ function SourcesPanel({ kbId }: { kbId: string }) {
           <div className="min-w-0">
             <h2 className="text-base font-semibold">文件目录与摄取队列</h2>
             <p className="mt-1 text-sm text-neutral-600">raw 保留用户上传结构，wiki 按 KN 规则生成可追溯页面。</p>
+            <div className="mt-2 flex items-center gap-2 text-xs text-neutral-600">
+              <span>上传到</span>
+              <span className="rounded border border-cyan-100 bg-cyan-50 px-2 py-1 font-mono text-cyan-800">{selectedTargetLabel}</span>
+              {uploadTargetPath && (
+                <button
+                  className="rounded border border-neutral-200 px-2 py-1 hover:bg-neutral-50"
+                  disabled={uploading}
+                  onClick={() => setUploadTargetPath("")}
+                  type="button"
+                >
+                  使用 raw 根目录
+                </button>
+              )}
+            </div>
+            {uploadError && <p className="mt-2 text-xs text-red-700">{uploadError}</p>}
           </div>
           <div className="flex shrink-0 gap-2">
-            <label className="inline-flex h-9 cursor-pointer items-center gap-2 rounded-md border border-neutral-200 px-3 text-sm hover:bg-neutral-50">
+            <label className={`inline-flex h-9 items-center gap-2 rounded-md border border-neutral-200 px-3 text-sm hover:bg-neutral-50 ${uploading ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}>
               <Upload className="h-4 w-4" />
               {uploading ? "上传中" : "上传文件"}
-              <input className="hidden" type="file" multiple onChange={(event) => void upload(event.target.files)} />
+              <input
+                className="hidden"
+                disabled={uploading}
+                type="file"
+                multiple
+                onChange={(event) => {
+                  const input = event.currentTarget
+                  void upload(input.files).finally(() => { input.value = "" })
+                }}
+              />
             </label>
-            <label className="inline-flex h-9 cursor-pointer items-center gap-2 rounded-md border border-neutral-200 px-3 text-sm hover:bg-neutral-50">
+            <label className={`inline-flex h-9 items-center gap-2 rounded-md border border-neutral-200 px-3 text-sm hover:bg-neutral-50 ${uploading ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}>
               <Folder className="h-4 w-4" />
               文件夹
-              <input className="hidden" type="file" multiple {...folderInputProps} onChange={(event) => void upload(event.target.files)} />
+              <input
+                className="hidden"
+                disabled={uploading}
+                type="file"
+                multiple
+                {...folderInputProps}
+                onChange={(event) => {
+                  const input = event.currentTarget
+                  void upload(input.files).finally(() => { input.value = "" })
+                }}
+              />
             </label>
-            <button className="inline-flex h-9 items-center gap-2 rounded-md border border-neutral-200 px-3 text-sm hover:bg-neutral-50" onClick={() => void load()}>
-              <RefreshCw className="h-4 w-4" />
+            <button className="inline-flex h-9 items-center gap-2 rounded-md border border-neutral-200 px-3 text-sm hover:bg-neutral-50 disabled:opacity-60" disabled={uploading} onClick={() => void load()}>
+              <RefreshCw className={`h-4 w-4 ${uploading ? "animate-spin" : ""}`} />
               刷新
             </button>
           </div>
@@ -460,7 +514,14 @@ function SourcesPanel({ kbId }: { kbId: string }) {
       </section>
 
       <section className="grid min-h-0 flex-1 grid-cols-2 gap-3 p-3">
-        <TreePanel title="raw 上传目录" nodes={rawTree} selectedPath={selectedFile?.path} onOpenFile={(node) => void openFile("raw", node)} />
+        <TreePanel
+          title="raw 上传目录"
+          nodes={rawTree}
+          selectedFolderPath={uploadTargetPath}
+          selectedPath={selectedFile?.path}
+          onOpenFile={(node) => void openFile("raw", node)}
+          onSelectFolder={(node) => setUploadTargetPath(storageFolderToClientPath(node.path, "raw"))}
+        />
         <TreePanel title="wiki 规则目录" nodes={wikiTree} selectedPath={selectedFile?.path} onOpenFile={(node) => void openFile("wiki", node)} />
       </section>
 
@@ -475,36 +536,21 @@ function SourcesPanel({ kbId }: { kbId: string }) {
         }}
       />
 
+      <UploadProgressModal
+        progress={uploadProgress}
+        targetLabel={selectedTargetLabel}
+        visible={uploading}
+      />
+
       <section className="max-h-44 shrink-0 overflow-auto border-t border-neutral-100 bg-white">
         <div className="sticky top-0 z-10 border-b border-neutral-100 bg-white px-3 py-2">
-          <h3 className="text-sm font-semibold">任务队列</h3>
+          <h3 className="text-sm font-semibold">后台任务</h3>
         </div>
+        {taskLoadError && <div className="m-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{taskLoadError}</div>}
         <div className="divide-y divide-neutral-100">
-          {jobs.length === 0 && <div className="p-3 text-sm text-neutral-500">暂无任务</div>}
-          {jobs.map((job) => (
-            <div key={job.id} className="p-3">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-semibold uppercase text-neutral-500">{job.status}</span>
-                <span className="text-xs text-neutral-500">{job.progress}%</span>
-              </div>
-              <div className="mt-2 h-1.5 rounded bg-neutral-200">
-                <div className="h-full rounded bg-cyan-700" style={{ width: `${job.progress}%` }} />
-              </div>
-              <p className="mt-2 text-sm">{job.stage}</p>
-              {job.error && <p className="mt-1 text-xs text-red-700">{job.error}</p>}
-              <div className="mt-2 flex gap-2">
-                {job.status === "running" || job.status === "queued" ? (
-                  <button className="rounded border border-neutral-200 px-2 py-1 text-xs" onClick={() => void api.cancelJob(job.id).then(load)}>
-                    取消
-                  </button>
-                ) : null}
-                {job.status === "failed" || job.status === "cancelled" ? (
-                  <button className="rounded border border-neutral-200 px-2 py-1 text-xs" onClick={() => void api.retryJob(job.id).then(load)}>
-                    重试
-                  </button>
-                ) : null}
-              </div>
-            </div>
+          {tasks.length === 0 && <div className="p-3 text-sm text-neutral-500">暂无任务</div>}
+          {tasks.slice(0, 6).map((task) => (
+            <TaskSummaryRow key={task.id} task={task} onReload={load} />
           ))}
         </div>
       </section>
@@ -515,13 +561,17 @@ function SourcesPanel({ kbId }: { kbId: string }) {
 function TreePanel({
   title,
   nodes,
+  selectedFolderPath,
   selectedPath,
   onOpenFile,
+  onSelectFolder,
 }: {
   title: string
   nodes: FileTreeNode[]
+  selectedFolderPath?: string
   selectedPath?: string
   onOpenFile: (node: FileTreeNode) => void
+  onSelectFolder?: (node: FileTreeNode) => void
 }) {
   return (
     <div className="min-h-0 overflow-auto rounded-md border border-neutral-200 bg-white">
@@ -532,7 +582,17 @@ function TreePanel({
         {nodes.length === 0 ? (
           <p className="text-sm text-neutral-500">暂无文件</p>
         ) : (
-          nodes.map((node) => <TreeNodeView key={node.path} node={node} depth={0} selectedPath={selectedPath} onOpenFile={onOpenFile} />)
+          nodes.map((node) => (
+            <TreeNodeView
+              key={node.path}
+              node={node}
+              depth={0}
+              selectedFolderPath={selectedFolderPath}
+              selectedPath={selectedPath}
+              onOpenFile={onOpenFile}
+              onSelectFolder={onSelectFolder}
+            />
+          ))
         )}
       </div>
     </div>
@@ -542,19 +602,27 @@ function TreePanel({
 function TreeNodeView({
   node,
   depth,
+  selectedFolderPath,
   selectedPath,
   onOpenFile,
+  onSelectFolder,
 }: {
   node: FileTreeNode
   depth: number
+  selectedFolderPath?: string
   selectedPath?: string
   onOpenFile: (node: FileTreeNode) => void
+  onSelectFolder?: (node: FileTreeNode) => void
 }) {
   // 默认折叠；子节点仅在展开时挂载，避免上万文件时一次性渲染整棵树
   const [open, setOpen] = useState(false)
-  const selected = selectedPath === node.path
+  const selectedFolder = node.isDirectory && selectedFolderPath !== undefined && selectedFolderPath === storageFolderToClientPath(node.path, "raw")
+  const selected = selectedPath === node.path || selectedFolder
   const toggle = () => {
-    if (node.isDirectory) setOpen((value) => !value)
+    if (node.isDirectory) {
+      onSelectFolder?.(node)
+      setOpen((value) => !value)
+    }
     else onOpenFile(node)
   }
   return (
@@ -573,9 +641,136 @@ function TreeNodeView({
         {node.isDirectory ? <Folder className="h-4 w-4 shrink-0 text-amber-700" /> : <FileSearch className="h-4 w-4 shrink-0 text-neutral-500" />}
         <span className="truncate">{node.name}</span>
       </button>
-      {open && node.children?.map((child) => <TreeNodeView key={child.path} node={child} depth={depth + 1} selectedPath={selectedPath} onOpenFile={onOpenFile} />)}
+      {open && node.children?.map((child) => (
+        <TreeNodeView
+          key={child.path}
+          node={child}
+          depth={depth + 1}
+          selectedFolderPath={selectedFolderPath}
+          selectedPath={selectedPath}
+          onOpenFile={onOpenFile}
+          onSelectFolder={onSelectFolder}
+        />
+      ))}
     </div>
   )
+}
+
+function UploadProgressModal({
+  progress,
+  targetLabel,
+  visible,
+}: {
+  progress: number
+  targetLabel: string
+  visible: boolean
+}) {
+  if (!visible) return null
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-neutral-950/45 p-4" role="dialog" aria-modal="true">
+      <section className="w-full max-w-md rounded-lg border border-neutral-200 bg-white p-5 shadow-2xl">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-cyan-50 text-cyan-700">
+            <Upload className="h-5 w-5" />
+          </div>
+          <div className="min-w-0">
+            <h3 className="text-sm font-semibold">正在上传</h3>
+            <p className="mt-1 truncate text-xs text-neutral-500">{targetLabel}</p>
+          </div>
+        </div>
+        <div className="mt-5">
+          <div className="mb-2 flex items-center justify-between text-xs text-neutral-500">
+            <span>文件接收中，完成前不能继续上传</span>
+            <span>{progress}%</span>
+          </div>
+          <div className="h-2 overflow-hidden rounded-full bg-neutral-200">
+            <div className="h-full rounded-full bg-cyan-700 transition-all" style={{ width: `${progress}%` }} />
+          </div>
+        </div>
+      </section>
+    </div>
+  )
+}
+
+function TaskSummaryRow({ task, onReload }: { task: BackgroundTask; onReload: () => Promise<void> }) {
+  const busy = task.status === "queued" || task.status === "running"
+  const failed = task.status === "failed" || task.status === "cancelled"
+  const sourceLabel = task.sourcePaths.length > 0
+    ? task.sourcePaths.slice(0, 3).join(", ") + (task.sourcePaths.length > 3 ? ` 等 ${task.sourcePaths.length} 个文件` : "")
+    : `${task.sourceIds.length} 个文件`
+
+  const retry = async () => {
+    await api.retryTask(task.id)
+    await onReload()
+  }
+
+  const cancel = async () => {
+    await api.cancelTask(task.id)
+    await onReload()
+  }
+
+  return (
+    <div className="p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <TaskStatusIcon status={task.status} />
+            <span className={`rounded border px-2 py-0.5 text-[11px] ${taskStatusClass(task.status)}`}>
+              {taskStatusLabel(task.status)}
+            </span>
+            <span className="truncate text-sm font-medium">{task.title}</span>
+          </div>
+          <p className="mt-1 truncate text-xs text-neutral-500">{sourceLabel}</p>
+          <p className="mt-1 truncate text-xs text-neutral-600">{task.stage}</p>
+          {task.error && <p className="mt-1 truncate text-xs text-red-700">{task.error}</p>}
+        </div>
+        <span className="shrink-0 text-xs text-neutral-500">{task.progress}%</span>
+      </div>
+      <div className="mt-2 h-1.5 rounded bg-neutral-200">
+        <div className="h-full rounded bg-cyan-700" style={{ width: `${task.progress}%` }} />
+      </div>
+      <div className="mt-2 flex gap-2">
+        {busy && (
+          <button className="rounded border border-neutral-200 px-2 py-1 text-xs hover:bg-neutral-50" onClick={() => void cancel()}>
+            取消
+          </button>
+        )}
+        {failed && (
+          <button className="inline-flex items-center gap-1 rounded border border-neutral-200 px-2 py-1 text-xs hover:bg-neutral-50" onClick={() => void retry()}>
+            <RotateCcw className="h-3 w-3" />
+            重试
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function TaskStatusIcon({ status }: { status: BackgroundTask["status"] }) {
+  if (status === "running") return <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-700" />
+  if (status === "queued") return <Clock className="h-3.5 w-3.5 text-neutral-500" />
+  if (status === "completed") return <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+  if (status === "failed") return <AlertCircle className="h-3.5 w-3.5 text-red-600" />
+  return <X className="h-3.5 w-3.5 text-neutral-500" />
+}
+
+function taskStatusLabel(status: BackgroundTask["status"]): string {
+  if (status === "queued") return "未完成"
+  if (status === "running") return "执行中"
+  if (status === "completed") return "已完成"
+  if (status === "failed") return "失败"
+  return "已取消"
+}
+
+function taskStatusClass(status: BackgroundTask["status"]): string {
+  if (status === "queued" || status === "running") return "border-cyan-200 bg-cyan-50 text-cyan-800"
+  if (status === "completed") return "border-emerald-200 bg-emerald-50 text-emerald-800"
+  if (status === "failed") return "border-red-200 bg-red-50 text-red-700"
+  return "border-neutral-200 bg-neutral-100 text-neutral-600"
+}
+
+function storageFolderToClientPath(path: string, root: "raw" | "wiki"): string {
+  return normalizeClientRelativePath(path.replace(new RegExp(`^${root}/?`), ""))
 }
 
 function DocumentPreviewModal({
@@ -721,10 +916,79 @@ type AgentUiMessage = {
 
 function AgentChatPanel({ kbId }: { kbId: string }) {
   const [conversationId, setConversationId] = useState<string | undefined>()
+  const [conversations, setConversations] = useState<AgentConversation[]>([])
   const [messages, setMessages] = useState<AgentUiMessage[]>([])
   const [input, setInput] = useState("")
   const [busy, setBusy] = useState(false)
+  const [historyLoading, setHistoryLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  const loadConversation = async (id: string) => {
+    setHistoryLoading(true)
+    setError(null)
+    try {
+      const detail = await api.conversationDetail(kbId, id)
+      setConversationId(detail.conversation.id)
+      setMessages(detail.messages.map((message) => ({
+        id: message.id,
+        role: message.role,
+        content: message.content,
+        citations: message.citations,
+        trace: message.trace,
+      })))
+    } catch (err) {
+      setError(errorMessage(err))
+    } finally {
+      setHistoryLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false
+    setConversationId(undefined)
+    setMessages([])
+    setConversations([])
+    setHistoryLoading(true)
+    setError(null)
+    void api.listConversations(kbId)
+      .then(async (items) => {
+        if (cancelled) return
+        setConversations(items)
+        const first = items[0]
+        if (!first) return
+        const detail = await api.conversationDetail(kbId, first.id)
+        if (cancelled) return
+        setConversationId(detail.conversation.id)
+        setMessages(detail.messages.map((message) => ({
+          id: message.id,
+          role: message.role,
+          content: message.content,
+          citations: message.citations,
+          trace: message.trace,
+        })))
+      })
+      .catch((err) => {
+        if (!cancelled) setError(errorMessage(err))
+      })
+      .finally(() => {
+        if (!cancelled) setHistoryLoading(false)
+      })
+    return () => { cancelled = true }
+  }, [kbId])
+
+  const refreshConversations = async () => {
+    try {
+      setConversations(await api.listConversations(kbId))
+    } catch {
+      // Chat answer already succeeded; history refresh can wait for the next panel load.
+    }
+  }
+
+  const startNewConversation = () => {
+    setConversationId(undefined)
+    setMessages([])
+    setError(null)
+  }
 
   const send = async () => {
     const question = input.trim()
@@ -747,6 +1011,7 @@ function AgentChatPanel({ kbId }: { kbId: string }) {
           trace: response.trace,
         },
       ])
+      void refreshConversations()
     } catch (err) {
       setError(errorMessage(err))
     } finally {
@@ -755,7 +1020,41 @@ function AgentChatPanel({ kbId }: { kbId: string }) {
   }
 
   return (
-    <section className="grid h-full min-h-0 grid-rows-[minmax(0,1fr)_auto] bg-white">
+    <section className="grid h-full min-h-0 grid-cols-[220px_minmax(0,1fr)] bg-white">
+      <aside className="min-h-0 border-r border-neutral-100 bg-neutral-50/60">
+        <div className="flex items-center justify-between gap-2 border-b border-neutral-100 p-3">
+          <span className="text-xs font-semibold text-neutral-700">会话历史</span>
+          <button
+            className="rounded border border-neutral-200 bg-white px-2 py-1 text-xs text-neutral-700 hover:bg-neutral-50"
+            onClick={startNewConversation}
+            type="button"
+          >
+            新会话
+          </button>
+        </div>
+        <div className="min-h-0 space-y-1 overflow-auto p-2">
+          {historyLoading && conversations.length === 0 ? (
+            <div className="flex items-center gap-2 px-2 py-3 text-xs text-neutral-500">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              正在加载
+            </div>
+          ) : conversations.length === 0 ? (
+            <div className="px-2 py-3 text-xs leading-5 text-neutral-500">暂无已保存会话</div>
+          ) : conversations.map((item) => (
+            <button
+              className={`block w-full rounded-md px-2 py-2 text-left text-xs ${conversationId === item.id ? "bg-white text-cyan-800 shadow-sm" : "text-neutral-600 hover:bg-white"}`}
+              disabled={historyLoading || busy}
+              key={item.id}
+              onClick={() => void loadConversation(item.id)}
+              type="button"
+            >
+              <div className="truncate font-medium">{item.title || "未命名会话"}</div>
+              <div className="mt-1 truncate text-[11px] text-neutral-400">{new Date(item.updatedAt).toLocaleString()}</div>
+            </button>
+          ))}
+        </div>
+      </aside>
+      <div className="grid min-h-0 grid-rows-[minmax(0,1fr)_auto]">
       <div className="min-h-0 overflow-auto px-4 py-4">
         {messages.length === 0 && (
           <div className="flex h-full items-center justify-center text-center">
@@ -822,6 +1121,7 @@ function AgentChatPanel({ kbId }: { kbId: string }) {
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
           </button>
         </div>
+      </div>
       </div>
     </section>
   )
@@ -1103,8 +1403,10 @@ function ToolsPanel({ kbId, isAdmin }: { kbId: string; isAdmin: boolean }) {
   const [customError, setCustomError] = useState<string | null>(null)
 
   const loadTools = async (cancelled?: () => boolean) => {
-    const config = isAdmin ? await api.toolConfig() : undefined
-    const items = config?.definitions ?? await api.listKbTools(kbId)
+    const [items, config] = await Promise.all([
+      api.listKbTools(kbId),
+      isAdmin ? api.toolConfig() : Promise.resolve(undefined),
+    ])
     if (cancelled?.()) return
     if (config) setCustomTools(config.customTools)
     setTools(items)
@@ -1328,6 +1630,8 @@ function defaultToolArgs(tool?: ToolDefinition): string {
   }
   if (tool?.name === "retrieve_kb") args.query = ""
   if (tool?.name === "read_kb_file") args.key = "wiki/index.md"
+  if (tool?.name === "raw_list_files") args.parent = ""
+  if (tool?.name === "read_raw_source") args.path = "raw/example.txt"
   return JSON.stringify(args, null, 2)
 }
 

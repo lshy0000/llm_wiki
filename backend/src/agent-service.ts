@@ -1,21 +1,8 @@
 import type { LlmGateway, LlmMessage } from "./llm-gateway.js"
 import type { KnowledgeRepository } from "./repository.js"
 import type { ToolDefinition, ToolService } from "./tool-service.js"
-import type { AuthContext, ChatMessage, KnowledgeBase, SearchDiagnostics } from "./types.js"
+import type { AgentRun, AgentTraceStep, AgentTraceType, AuthContext, ChatMessage, KnowledgeBase, SearchDiagnostics } from "./types.js"
 import { id, nowIso } from "./wiki-utils.js"
-
-export type AgentTraceType = "plan" | "tool" | "observation" | "answer"
-
-export interface AgentTraceStep {
-  id: string
-  type: AgentTraceType
-  title: string
-  detail: string
-  toolName?: string
-  latencyMs?: number
-  input?: unknown
-  outputSummary?: unknown
-}
 
 export interface AgentChatResponse {
   conversationId: string
@@ -51,6 +38,9 @@ interface FileToolResult {
   content: string
   bytes: number
   truncated: boolean
+  total?: number
+  offset?: number
+  end?: number
 }
 
 interface MindmapToolResult {
@@ -66,10 +56,19 @@ interface EvidenceFile {
   key: string
   content: string
   truncated: boolean
+  total?: number
+  offset?: number
+  end?: number
 }
 
 interface CustomToolEvidence {
   toolName: string
+  result: unknown
+}
+
+interface RawFileTreeEvidence {
+  parent: string
+  deep: number
   result: unknown
 }
 
@@ -88,17 +87,33 @@ export class AgentService {
   ) {}
 
   async ask(input: AgentAskInput): Promise<AgentChatResponse> {
+    return this.askDedicated(input)
+  }
+
+  private async askDedicated(input: AgentAskInput): Promise<AgentChatResponse> {
     const question = input.question.trim()
     if (!question) throw new Error("question is required")
 
-    const conversationId = input.conversationId?.trim() || id("conv")
+    const requestedConversationId = input.conversationId?.trim()
+    const existingConversation = requestedConversationId
+      ? await this.repo.getAgentConversation(input.kb.id, requestedConversationId)
+      : undefined
+    const conversationId = existingConversation?.id ?? id("conv")
     const trace: AgentTraceStep[] = []
     const context = { auth: input.auth, kb: input.kb }
+    const now = nowIso()
+    await this.repo.saveAgentConversation({
+      id: conversationId,
+      companyId: input.kb.companyId,
+      kbId: input.kb.id,
+      agentType: "kb_dedicated",
+      title: titleFromQuestion(question),
+      createdBy: input.auth.identity.id,
+      createdAt: now,
+      updatedAt: now,
+    })
     const history = await this.repo.listChatMessages(input.kb.id, conversationId)
-
-    trace.push(step("plan", "规划", this.routeSummary(question)))
-
-    await this.repo.addChatMessage({
+    const userMessage = await this.repo.addChatMessage({
       id: id("msg"),
       companyId: input.kb.companyId,
       kbId: input.kb.id,
@@ -108,50 +123,75 @@ export class AgentService {
       citations: [],
       createdAt: nowIso(),
     })
+    let run = await this.repo.saveAgentRun({
+      id: id("run"),
+      companyId: input.kb.companyId,
+      kbId: input.kb.id,
+      conversationId,
+      userMessageId: userMessage.id,
+      agentType: "kb_dedicated",
+      status: "running",
+      startedAt: nowIso(),
+    })
 
-    if (isGreeting(question)) {
-      const answer = await this.answerGreeting(input.kb.companyId, question)
-      await this.storeAssistant(input.kb, conversationId, answer, [])
-      trace.push(step("answer", "直接回答", "识别为寒暄，不调用知识库工具。"))
-      return { conversationId, answer, citations: [], trace }
-    }
+    try {
+      await this.recordStep(run, trace, "plan", "Plan", this.routeSummary(question), {
+        outputSummary: { agentType: "kb_dedicated", kbId: input.kb.id, kbName: input.kb.name },
+      })
 
-    const needsGraph = shouldUseMindmap(question)
-    const topK = needsGraph ? DEEP_TOP_K : DEFAULT_TOP_K
-    const retrievalRun = this.runTool(context, trace, "retrieve_kb", { query: question, topK })
-    const mindmapRun = needsGraph
-      ? this.runTool(context, trace, "get_mindmap", { maxNodesPerCommunity: 8, maxEdges: 24 })
-      : Promise.resolve(undefined)
-
-    let retrieval = asRetrievalResult((await retrievalRun).result)
-    const mindmap = asMindmapResult((await mindmapRun)?.result)
-    const customToolResults = await this.runMatchedCustomTools(context, trace, question)
-
-    if (isWeakRecall(retrieval, question)) {
-      const embedding = await this.llm.embedForKnowledgeBase(input.kb.id, question)
-      if (embedding) {
-        trace.push(step("observation", "弱召回重试", "首次召回信号较弱，追加一次向量召回。"))
-        retrieval = asRetrievalResult((await this.runTool(context, trace, "retrieve_kb", {
-          query: question,
-          topK: DEEP_TOP_K,
-          queryEmbedding: embedding,
-        })).result)
-      } else {
-        trace.push(step("observation", "弱召回", "首次召回信号较弱，未找到可用向量模型，继续使用关键词和图谱结果。"))
+      if (isGreeting(question)) {
+        const answer = await this.answerGreeting(input.kb.companyId, question)
+        const assistant = await this.storeAssistant(input.kb, conversationId, answer, [])
+        await this.recordStep(run, trace, "answer", "Direct answer", "Greeting detected; no knowledge-base tools were called.")
+        run = await this.repo.saveAgentRun({ ...run, assistantMessageId: assistant.id, status: "completed", completedAt: nowIso(), error: undefined })
+        return { conversationId, answer, citations: [], trace }
       }
+
+      const needsGraph = shouldUseMindmap(question)
+      const topK = needsGraph ? DEEP_TOP_K : DEFAULT_TOP_K
+      const retrievalRun = this.runToolForRun(run, context, trace, "retrieve_kb", { query: question, topK })
+      const mindmapRun = needsGraph
+        ? this.runToolForRun(run, context, trace, "get_mindmap", { maxNodesPerCommunity: 8, maxEdges: 24 })
+        : Promise.resolve(undefined)
+
+      let retrieval = asRetrievalResult((await retrievalRun).result)
+      const mindmap = asMindmapResult((await mindmapRun)?.result)
+      const customToolResults = await this.runMatchedCustomToolsForRun(run, context, trace, question)
+      const rawFileTree = shouldListRawFiles(question)
+        ? await this.listRawFilesForRun(run, context, trace)
+        : undefined
+
+      if (isWeakRecall(retrieval, question)) {
+        const embedding = await this.llm.embedForKnowledgeBase(input.kb.id, question)
+        if (embedding) {
+          await this.recordStep(run, trace, "observation", "Weak recall retry", "First recall was weak; retrying with query embedding.")
+          retrieval = asRetrievalResult((await this.runToolForRun(run, context, trace, "retrieve_kb", {
+            query: question,
+            topK: DEEP_TOP_K,
+            queryEmbedding: embedding,
+          })).result)
+        } else {
+          await this.recordStep(run, trace, "observation", "Weak recall", "First recall was weak and no embedding model was available; continuing with keyword and graph results.")
+        }
+      }
+
+      const files = await this.readEvidenceFilesForRun(run, context, trace, retrieval, shouldReadEvidence(question, retrieval), shouldReadRawSource(question))
+      const citations = citationsFrom(retrieval)
+      const fallback = fallbackAnswer(question, retrieval, files)
+      const answer = await this.generateAnswer(input.kb, question, history, retrieval, mindmap, files, customToolResults, rawFileTree, fallback)
+
+      const assistant = await this.storeAssistant(input.kb, conversationId, answer, citations)
+      await this.recordStep(run, trace, "answer", "Generated answer", `Generated from ${retrieval.results.length} recalled result(s) and ${files.length} page excerpt(s).`, {
+        outputSummary: { citations: citations.length },
+      })
+      run = await this.repo.saveAgentRun({ ...run, assistantMessageId: assistant.id, status: "completed", completedAt: nowIso(), error: undefined })
+      return { conversationId, answer, citations, trace }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      await this.recordStep(run, trace, "error", "Agent failed", message).catch(() => undefined)
+      await this.repo.saveAgentRun({ ...run, status: "failed", completedAt: nowIso(), error: message })
+      throw err
     }
-
-    const files = await this.readEvidenceFiles(context, trace, retrieval, shouldReadEvidence(question, retrieval))
-    const citations = citationsFrom(retrieval)
-    const fallback = fallbackAnswer(question, retrieval, files)
-    const answer = await this.generateAnswer(input.kb, question, history, retrieval, mindmap, files, customToolResults, fallback)
-
-    await this.storeAssistant(input.kb, conversationId, answer, citations)
-    trace.push(step("answer", "生成回答", `基于 ${retrieval.results.length} 条召回结果和 ${files.length} 个页面片段生成答案。`, {
-      outputSummary: { citations: citations.length },
-    }))
-
-    return { conversationId, answer, citations, trace }
   }
 
   private async answerGreeting(companyId: string, question: string): Promise<string> {
@@ -177,14 +217,17 @@ export class AgentService {
     mindmap: MindmapToolResult | undefined,
     files: EvidenceFile[],
     customToolResults: CustomToolEvidence[],
+    rawFileTree: RawFileTreeEvidence | undefined,
     fallback: string,
   ): Promise<string> {
     const messages: LlmMessage[] = [
       {
         role: "system",
         content: [
-          "You are a fast knowledge-base agent.",
-          "Answer using only the provided knowledge-base evidence.",
+          `You are the dedicated agent for exactly one knowledge base: ${kb.name} (${kb.id}).`,
+          "Do not list, inspect, switch to, or infer facts from other knowledge bases.",
+          "Answer using only the provided current-knowledge-base evidence.",
+          "Prefer retrieval and generated wiki evidence. Read raw source files only when the user explicitly needs original text, source code, direct quotes, or generated evidence is insufficient for a specific claim.",
           "If the evidence is insufficient, say what is missing instead of inventing facts.",
           "Use the user's language.",
           "Cite relevant page titles or paths inline when useful.",
@@ -197,17 +240,19 @@ export class AgentService {
       })),
       {
         role: "user",
-        content: renderAgentPrompt(kb, question, retrieval, mindmap, files, customToolResults),
+        content: renderAgentPrompt(kb, question, retrieval, mindmap, files, customToolResults, rawFileTree),
       },
     ]
     return this.llm.completeForCompany(kb.companyId, messages, fallback, 1800)
   }
 
-  private async readEvidenceFiles(
+  private async readEvidenceFilesForRun(
+    run: AgentRun,
     context: { auth: AuthContext; kb: KnowledgeBase },
     trace: AgentTraceStep[],
     retrieval: RetrievalToolResult,
     detailed: boolean,
+    rawSourceAllowed: boolean,
   ): Promise<EvidenceFile[]> {
     const limit = detailed ? MAX_FILE_READS : Math.min(2, MAX_FILE_READS)
     const keys = unique(
@@ -217,41 +262,65 @@ export class AgentService {
     ).slice(0, limit)
     const files: EvidenceFile[] = []
     for (const key of keys) {
-      const response = await this.runTool(context, trace, "read_kb_file", { key, maxBytes: FILE_READ_BYTES }).catch((err) => {
-        trace.push(step("observation", "读取跳过", err instanceof Error ? err.message : String(err), { outputSummary: { key } }))
+      if (key.startsWith("raw/") && !rawSourceAllowed) {
+        await this.recordStep(run, trace, "observation", "Raw source not read", `Skipped ${key}; raw source is reserved for explicit original-text requests.`, { outputSummary: { key } })
+        continue
+      }
+      const toolName = key.startsWith("raw/") ? "read_raw_source" : "read_kb_file"
+      const toolArgs = key.startsWith("raw/")
+        ? { path: key, offset: 0, maxChars: FILE_READ_BYTES }
+        : { key, maxBytes: FILE_READ_BYTES }
+      const response = await this.runToolForRun(run, context, trace, toolName, toolArgs).catch(async (err) => {
+        await this.recordStep(run, trace, "observation", "Read skipped", err instanceof Error ? err.message : String(err), { outputSummary: { key } })
         return undefined
       })
       const file = asFileResult(response?.result)
-      if (file) files.push({ key: file.key, content: file.content, truncated: file.truncated })
+      if (file) files.push({ key: file.key, content: file.content, truncated: file.truncated, total: file.total, offset: file.offset, end: file.end })
     }
     return files
   }
 
-  private async runMatchedCustomTools(
+  private async listRawFilesForRun(
+    run: AgentRun,
+    context: { auth: AuthContext; kb: KnowledgeBase },
+    trace: AgentTraceStep[],
+  ): Promise<RawFileTreeEvidence | undefined> {
+    const args = { parent: "", deep: 3 }
+    try {
+      const response = await this.runToolForRun(run, context, trace, "raw_list_files", args)
+      return { parent: args.parent, deep: args.deep, result: response.result }
+    } catch (err) {
+      await this.recordStep(run, trace, "observation", "Raw file list skipped", err instanceof Error ? err.message : String(err))
+      return undefined
+    }
+  }
+
+  private async runMatchedCustomToolsForRun(
+    run: AgentRun,
     context: { auth: AuthContext; kb: KnowledgeBase },
     trace: AgentTraceStep[],
     question: string,
   ): Promise<CustomToolEvidence[]> {
-    const candidates = this.tools.agentDefinitions({ kbScoped: true })
+    const candidates = this.tools.agentDefinitions({ kbScoped: true, dedicatedKb: true })
       .filter((definition) => definition.source === "custom")
-      .filter((definition) => definition.scope === "global" || context.kb)
       .filter((definition) => canAutoFill(definition) && matchesCustomTool(question, definition))
       .slice(0, 3)
     const results: CustomToolEvidence[] = []
     for (const definition of candidates) {
       try {
-        const response = await this.runTool(context, trace, definition.name, autoFillArgs(definition, question, context.kb.id))
+        const response = await this.runToolForRun(run, context, trace, definition.name, autoFillArgs(definition, question, context.kb.id))
         results.push({ toolName: definition.name, result: response.result })
       } catch (err) {
-        trace.push(step("observation", "自定义工具跳过", err instanceof Error ? err.message : String(err), {
+        await this.recordStep(run, trace, "observation", "Custom tool skipped", err instanceof Error ? err.message : String(err), {
           toolName: definition.name,
-        }))
+        })
       }
     }
     return results
   }
 
-  private async runTool(
+  private async runToolForRun(
+    run: AgentRun,
     context: { auth: AuthContext; kb: KnowledgeBase },
     trace: AgentTraceStep[],
     toolName: string,
@@ -260,17 +329,38 @@ export class AgentService {
     const started = Date.now()
     const response = await this.tools.run(toolName, context, args)
     const latencyMs = Date.now() - started
-    trace.push(step("tool", toolName, toolDetail(toolName, response.result), {
+    await this.recordStep(run, trace, "tool", toolName, toolDetail(toolName, response.result), {
       toolName,
       latencyMs,
       input: summarizeToolInput(args),
       outputSummary: summarizeToolOutput(response.result),
-    }))
+    })
     return { result: response.result }
   }
 
-  private async storeAssistant(kb: KnowledgeBase, conversationId: string, answer: string, citations: ChatMessage["citations"]): Promise<void> {
-    await this.repo.addChatMessage({
+  private async recordStep(
+    run: AgentRun,
+    trace: AgentTraceStep[],
+    type: AgentTraceType,
+    title: string,
+    detail: string,
+    extra: Partial<AgentTraceStep> = {},
+  ): Promise<AgentTraceStep> {
+    const item = step(type, title, detail, extra)
+    trace.push(item)
+    await this.repo.addAgentRunStep({
+      ...item,
+      companyId: run.companyId,
+      kbId: run.kbId,
+      runId: run.id,
+      ordinal: trace.length - 1,
+      createdAt: nowIso(),
+    })
+    return item
+  }
+
+  private async storeAssistant(kb: KnowledgeBase, conversationId: string, answer: string, citations: ChatMessage["citations"]): Promise<ChatMessage> {
+    return this.repo.addChatMessage({
       id: id("msg"),
       companyId: kb.companyId,
       kbId: kb.id,
@@ -296,9 +386,12 @@ function renderAgentPrompt(
   mindmap: MindmapToolResult | undefined,
   files: EvidenceFile[],
   customToolResults: CustomToolEvidence[],
+  rawFileTree: RawFileTreeEvidence | undefined,
 ): string {
   return [
-    `Knowledge base: ${kb.name}`,
+    `Dedicated knowledge base: ${kb.name}`,
+    `Knowledge base id: ${kb.id}`,
+    kb.description ? `Knowledge base description: ${kb.description}` : "",
     `User question: ${question}`,
     "",
     "Recall results:",
@@ -313,13 +406,23 @@ function renderAgentPrompt(
       "Custom tool results:",
       ...customToolResults.map((item) => `Tool: ${item.toolName}\n${JSON.stringify(item.result, null, 2).slice(0, 4000)}`),
     ].join("\n\n") : "",
+    rawFileTree ? [
+      "",
+      `Raw source file tree (parent=${rawFileTree.parent || "raw/"}, deep=${rawFileTree.deep}):`,
+      JSON.stringify(rawFileTree.result, null, 2).slice(0, 8000),
+    ].join("\n") : "",
     files.length ? ["", "Page excerpts:", ...files.map((file) => [
-      `File: ${file.key}${file.truncated ? " (truncated)" : ""}`,
+      `File: ${file.key}${file.total !== undefined ? ` (window ${file.offset ?? 0}-${file.end ?? file.content.length}/${file.total})` : ""}${file.truncated ? " (truncated)" : ""}`,
       file.content.slice(0, FILE_READ_BYTES),
     ].join("\n"))].join("\n\n") : "",
     "",
     "Write the final answer now.",
   ].filter(Boolean).join("\n")
+}
+
+function titleFromQuestion(question: string): string {
+  const singleLine = question.replace(/\s+/g, " ").trim()
+  return singleLine.length > 80 ? `${singleLine.slice(0, 77)}...` : singleLine || "Untitled conversation"
 }
 
 function canAutoFill(definition: ToolDefinition): boolean {
@@ -386,6 +489,19 @@ function shouldReadEvidence(question: string, retrieval: RetrievalToolResult): b
   return (retrieval.results[0]?.score ?? 0) < 45
 }
 
+function shouldReadRawSource(question: string): boolean {
+  return /(raw|source|original|quote|verbatim|source code|code)/i.test(question) ||
+    /(\u539f\u6587|\u6e90\u6587\u4ef6|\u539f\u59cb|\u5f15\u7528|\u5168\u6587|\u6e90\u7801|\u4ee3\u7801)/.test(question)
+}
+
+function shouldListRawFiles(question: string): boolean {
+  const hasRawSignal = /(raw|source|original|uploaded)/i.test(question) ||
+    /(\u6e90\u6587\u4ef6|\u539f\u59cb|\u4e0a\u4f20)/.test(question)
+  const hasListSignal = /(list|tree|folder|directory|files?)/i.test(question) ||
+    /(\u76ee\u5f55|\u7ed3\u6784|\u6587\u4ef6\u5939|\u6587\u4ef6\u5217\u8868|\u6709\u54ea\u4e9b|\u5217\u51fa)/.test(question)
+  return hasRawSignal && hasListSignal
+}
+
 function isWeakRecall(retrieval: RetrievalToolResult, question: string): boolean {
   if (question.length < 6) return false
   if (retrieval.results.length === 0) return true
@@ -420,6 +536,9 @@ function asFileResult(value: unknown): FileToolResult | undefined {
     content: value.content,
     bytes: typeof value.bytes === "number" ? value.bytes : value.content.length,
     truncated: Boolean(value.truncated),
+    total: typeof value.total === "number" ? value.total : undefined,
+    offset: typeof value.offset === "number" ? value.offset : undefined,
+    end: typeof value.end === "number" ? value.end : undefined,
   }
 }
 
@@ -459,6 +578,11 @@ function toolDetail(toolName: string, result: unknown): string {
     const file = asFileResult(result)
     return file ? `读取 ${file.key}，${file.bytes} bytes${file.truncated ? "，已截断" : ""}。` : "读取文件。"
   }
+  if (toolName === "read_raw_source") {
+    const file = asFileResult(result)
+    return file ? `读取 raw 源文件 ${file.key}：${file.offset ?? 0}-${file.end ?? file.content.length}/${file.total ?? file.content.length}。` : "读取 raw 源文件。"
+  }
+  if (toolName === "raw_list_files") return "列出 raw 源文件目录。"
   return "工具调用完成。"
 }
 
@@ -480,7 +604,10 @@ function summarizeToolOutput(result: unknown): unknown {
   const mindmap = asMindmapResult(result)
   if (mindmap?.summary) return mindmap.summary
   const file = asFileResult(result)
-  if (file) return { key: file.key, bytes: file.bytes, truncated: file.truncated }
+  if (file) return { key: file.key, bytes: file.bytes, total: file.total, offset: file.offset, end: file.end, truncated: file.truncated }
+  if (isRecord(result) && typeof result.totalFiles === "number") {
+    return { totalFiles: result.totalFiles, totalDirectories: result.totalDirectories, parent: result.parent, deep: result.deep }
+  }
   return undefined
 }
 

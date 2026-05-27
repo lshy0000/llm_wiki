@@ -1,22 +1,28 @@
-import { useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import type { ReactElement, ReactNode } from "react"
 import {
-  Activity,
+  AlertCircle,
   BookOpen,
   Blocks,
   Brain,
   Building2,
   ChevronUp,
+  CheckCircle2,
   ClipboardList,
+  Clock,
   KeyRound,
   LibraryBig,
+  Loader2,
   LogOut,
   Moon,
+  RefreshCw,
+  RotateCcw,
   Settings,
   UserRound,
   X,
 } from "lucide-react"
-import type { AuthPayload } from "@/web/types"
+import { api } from "@/web/api"
+import type { AuthPayload, BackgroundTask } from "@/web/types"
 
 type ActivePage = "home" | "database" | "detail" | "extensions" | "companySettings" | "apiKeys"
 
@@ -185,37 +191,215 @@ function MenuButton({ icon, label, onClick }: { icon: ReactElement; label: strin
   )
 }
 
+type TaskFilter = "all" | "unfinished" | "completed" | "failed"
+
+const TASK_FILTERS: Array<{ key: TaskFilter; label: string }> = [
+  { key: "all", label: "全部" },
+  { key: "unfinished", label: "未完成" },
+  { key: "completed", label: "已完成" },
+  { key: "failed", label: "失败" },
+]
+
 function TaskCenterOverlay({ onClose }: { onClose: () => void }) {
-  const tasks = [
-    ["持久化摄取队列", "上传、文件夹导入、崩溃恢复、取消和重试。"],
-    ["图洞察任务", "基于 4-Signal 图谱和 Louvain 社区生成研究线索。"],
-    ["异步审核", "lint、LLM review、Deep Research 结果进入人工判断。"],
-  ]
+  const [tasks, setTasks] = useState<BackgroundTask[]>([])
+  const [filter, setFilter] = useState<TaskFilter>("all")
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = async (showLoading = false) => {
+    if (showLoading) setLoading(true)
+    try {
+      setTasks(await api.listTasks())
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      if (showLoading) setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false
+    const loadIfAlive = async (showLoading = false) => {
+      if (showLoading) setLoading(true)
+      try {
+        const next = await api.listTasks()
+        if (!cancelled) {
+          setTasks(next)
+          setError(null)
+        }
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err))
+      } finally {
+        if (!cancelled && showLoading) setLoading(false)
+      }
+    }
+    void loadIfAlive(true)
+    const timer = window.setInterval(() => void loadIfAlive(), 3000)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [])
+
+  const counts = useMemo(() => {
+    const failed = tasks.filter((task) => task.status === "failed" || task.status === "cancelled").length
+    const completed = tasks.filter((task) => task.status === "completed").length
+    const unfinished = tasks.filter((task) => task.status === "queued" || task.status === "running").length
+    return { all: tasks.length, unfinished, completed, failed }
+  }, [tasks])
+
+  const visibleTasks = useMemo(() => {
+    if (filter === "unfinished") return tasks.filter((task) => task.status === "queued" || task.status === "running")
+    if (filter === "completed") return tasks.filter((task) => task.status === "completed")
+    if (filter === "failed") return tasks.filter((task) => task.status === "failed" || task.status === "cancelled")
+    return tasks
+  }, [filter, tasks])
+
   return (
-    <div className="fixed inset-0 z-30 bg-black/20" onClick={onClose}>
-      <aside className="absolute bottom-4 left-16 w-[420px] rounded-lg border border-neutral-200 bg-white p-4 shadow-xl" onClick={(event) => event.stopPropagation()}>
-        <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold">任务中心</h2>
-          <button className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-neutral-50" onClick={onClose}>
-            <X className="h-4 w-4" />
-          </button>
+    <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/35 p-6" onClick={onClose}>
+      <aside
+        className="flex h-[82vh] w-full max-w-6xl flex-col overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex h-16 shrink-0 items-center justify-between border-b border-neutral-200 px-5">
+          <div>
+            <h2 className="text-lg font-semibold">任务中心</h2>
+            <p className="mt-1 text-xs text-neutral-500">查看全部后台任务、失败任务，并重试。</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-neutral-50" onClick={() => void load(true)} title="刷新">
+              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+            </button>
+            <button className="flex h-8 w-8 items-center justify-center rounded-md hover:bg-neutral-50" onClick={onClose} title="关闭">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
         </div>
-        <div className="mt-3 divide-y divide-neutral-100 rounded-md border border-neutral-100">
-          {tasks.map(([name, description]) => (
-            <div key={name} className="flex gap-3 p-3">
-              <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-cyan-50 text-cyan-700">
-                <Activity className="h-4 w-4" />
+
+        <div className="grid shrink-0 grid-cols-4 gap-3 border-b border-neutral-100 bg-neutral-50/70 p-4">
+          {TASK_FILTERS.map((item) => (
+            <button
+              className={`min-h-20 rounded-md border bg-white p-3 text-left transition ${
+                filter === item.key ? "border-cyan-300 ring-2 ring-cyan-100" : "border-neutral-200 hover:border-cyan-200"
+              }`}
+              key={item.key}
+              onClick={() => setFilter(item.key)}
+              type="button"
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-neutral-700">{item.label}</span>
+                <TaskFilterIcon filter={item.key} />
               </div>
-              <div>
-                <div className="text-sm font-medium">{name}</div>
-                <div className="mt-1 text-xs leading-5 text-neutral-500">{description}</div>
-              </div>
-            </div>
+              <div className="mt-2 text-2xl font-semibold text-neutral-950">{counts[item.key]}</div>
+            </button>
           ))}
+        </div>
+
+        {error && <div className="mx-4 mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{error}</div>}
+
+        <div className="min-h-0 flex-1 overflow-auto">
+          {loading && tasks.length === 0 ? (
+            <div className="flex items-center gap-2 p-4 text-sm text-neutral-500">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              正在加载任务
+            </div>
+          ) : visibleTasks.length === 0 ? (
+            <div className="p-4 text-sm text-neutral-500">暂无{TASK_FILTERS.find((item) => item.key === filter)?.label}任务</div>
+          ) : (
+            <div>
+              <div className="sticky top-0 z-10 grid grid-cols-[minmax(0,1.4fr)_minmax(180px,0.7fr)_120px_160px_96px] gap-3 border-b border-neutral-100 bg-white px-5 py-2 text-xs font-medium text-neutral-500">
+                <span>任务</span>
+                <span>来源</span>
+                <span>进度</span>
+                <span>创建时间</span>
+                <span className="text-right">操作</span>
+              </div>
+              {visibleTasks.map((task) => (
+                <TaskCenterRow key={task.id} task={task} onReload={() => load()} />
+              ))}
+            </div>
+          )}
         </div>
       </aside>
     </div>
   )
+}
+
+function TaskFilterIcon({ filter }: { filter: TaskFilter }) {
+  if (filter === "unfinished") return <Clock className="h-4 w-4 text-cyan-700" />
+  if (filter === "completed") return <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+  if (filter === "failed") return <AlertCircle className="h-4 w-4 text-red-600" />
+  return <ClipboardList className="h-4 w-4 text-neutral-500" />
+}
+
+function TaskCenterRow({ task, onReload }: { task: BackgroundTask; onReload: () => Promise<void> }) {
+  const failed = task.status === "failed" || task.status === "cancelled"
+  const sourceText = task.sourcePaths.length > 0
+    ? task.sourcePaths.slice(0, 4).join(", ") + (task.sourcePaths.length > 4 ? ` 等 ${task.sourcePaths.length} 个文件` : "")
+    : `${task.sourceIds.length} 个文件`
+
+  const retry = async () => {
+    await api.retryTask(task.id)
+    await onReload()
+  }
+
+  return (
+    <article className="grid grid-cols-[minmax(0,1.4fr)_minmax(180px,0.7fr)_120px_160px_96px] items-center gap-3 border-b border-neutral-100 px-5 py-4">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
+          <TaskCenterStatusIcon status={task.status} />
+          <span className={`rounded border px-2 py-0.5 text-[11px] ${taskStatusClass(task.status)}`}>
+            {taskStatusLabel(task.status)}
+          </span>
+          <h3 className="truncate text-sm font-semibold">{task.title}</h3>
+        </div>
+        <p className="mt-1 truncate text-xs text-neutral-700">{task.stage}</p>
+        {task.error && <p className="mt-1 line-clamp-2 text-xs text-red-700">{task.error}</p>}
+      </div>
+      <div className="truncate text-xs text-neutral-500" title={sourceText}>{sourceText}</div>
+      <div>
+        <div className="mb-1 text-xs text-neutral-500">{task.progress}%</div>
+        <div className="h-1.5 rounded bg-neutral-200">
+          <div className="h-full rounded bg-cyan-700" style={{ width: `${task.progress}%` }} />
+        </div>
+      </div>
+      <div className="text-xs text-neutral-500">{new Date(task.createdAt).toLocaleString()}</div>
+      <div className="flex justify-end">
+        {failed ? (
+          <button className="inline-flex h-8 items-center gap-1.5 rounded-md border border-neutral-200 px-3 text-xs hover:bg-neutral-50" onClick={() => void retry()}>
+            <RotateCcw className="h-3.5 w-3.5" />
+            重试
+          </button>
+        ) : (
+          <span className="text-xs text-neutral-400">-</span>
+        )}
+      </div>
+    </article>
+  )
+}
+
+function TaskCenterStatusIcon({ status }: { status: BackgroundTask["status"] }) {
+  if (status === "running") return <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-700" />
+  if (status === "queued") return <Clock className="h-3.5 w-3.5 text-neutral-500" />
+  if (status === "completed") return <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+  if (status === "failed") return <AlertCircle className="h-3.5 w-3.5 text-red-600" />
+  return <X className="h-3.5 w-3.5 text-neutral-500" />
+}
+
+function taskStatusLabel(status: BackgroundTask["status"]): string {
+  if (status === "queued") return "未完成"
+  if (status === "running") return "执行中"
+  if (status === "completed") return "已完成"
+  if (status === "failed") return "失败"
+  return "已取消"
+}
+
+function taskStatusClass(status: BackgroundTask["status"]): string {
+  if (status === "queued" || status === "running") return "border-cyan-200 bg-cyan-50 text-cyan-800"
+  if (status === "completed") return "border-emerald-200 bg-emerald-50 text-emerald-800"
+  if (status === "failed") return "border-red-200 bg-red-50 text-red-700"
+  return "border-neutral-200 bg-neutral-100 text-neutral-600"
 }
 
 export function UserBadge({ auth }: { auth: AuthPayload }) {

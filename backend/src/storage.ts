@@ -9,7 +9,7 @@ export interface StorageProvider {
   readText(kbId: string, key: string): Promise<string>
   deleteObject(kbId: string, key: string): Promise<void>
   deleteKnowledgeBase(kbId: string): Promise<void>
-  listTree(kbId: string, prefix: string): Promise<FileTreeNode[]>
+  listTree(kbId: string, prefix: string, maxDepth?: number): Promise<FileTreeNode[]>
   publicPath(kbId: string, key: string): string
 }
 
@@ -49,11 +49,11 @@ export class LocalStorageProvider implements StorageProvider {
     await fs.rm(dir, { recursive: true, force: true })
   }
 
-  async listTree(kbId: string, prefix: string): Promise<FileTreeNode[]> {
+  async listTree(kbId: string, prefix: string, maxDepth?: number): Promise<FileTreeNode[]> {
     const safePrefix = normalizeStorageKey(prefix)
     const dir = this.resolve(kbId, safePrefix)
     try {
-      return await this.readDirRecursive(kbId, dir, safePrefix)
+      return await this.readDirRecursive(kbId, dir, safePrefix, maxDepth)
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return []
       throw err
@@ -75,7 +75,7 @@ export class LocalStorageProvider implements StorageProvider {
     return resolved
   }
 
-  private async readDirRecursive(kbId: string, absoluteDir: string, prefix: string): Promise<FileTreeNode[]> {
+  private async readDirRecursive(kbId: string, absoluteDir: string, prefix: string, maxDepth?: number, depth = 1): Promise<FileTreeNode[]> {
     const entries = await fs.readdir(absoluteDir, { withFileTypes: true })
     const nodes: FileTreeNode[] = []
     for (const entry of entries.sort((a, b) =>
@@ -94,7 +94,9 @@ export class LocalStorageProvider implements StorageProvider {
         size: entry.isDirectory() ? 0 : stat.size,
         updatedAt: stat.mtime.toISOString() || nowIso(),
       }
-      if (entry.isDirectory()) node.children = await this.readDirRecursive(kbId, absolute, key)
+      if (entry.isDirectory() && (maxDepth === undefined || depth < maxDepth)) {
+        node.children = await this.readDirRecursive(kbId, absolute, key, maxDepth, depth + 1)
+      }
       nodes.push(node)
     }
     return nodes
