@@ -1,7 +1,7 @@
 # LLM Wiki
 
 <p align="center">
-  <img src="logo.jpg" width="128" height="128" style="border-radius: 22%;" alt="LLM Wiki Logo">
+  <img src="docs/logo.png" width="128" height="128" style="border-radius: 22%;" alt="LLM Wiki Logo">
 </p>
 
 <p align="center">
@@ -25,7 +25,7 @@
 ---
 
 <p align="center">
-  <img src="assets/overview.jpg" width="100%" alt="Overview">
+  <img src="docs/assets/overview.jpg" width="100%" alt="Overview">
 </p>
 
 ## Features
@@ -51,7 +51,7 @@ LLM Wiki is a cross-platform desktop application that turns your documents into 
 This project is based on [Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) — a methodology for building personal knowledge bases using LLMs. We implemented the core ideas as a full desktop application with significant enhancements.
 
 <p align="center">
-  <img src="assets/llm_wiki_arch.jpg" width="100%" alt="LLM Wiki Architecture">
+  <img src="docs/assets/llm_wiki_arch.jpg" width="100%" alt="LLM Wiki Architecture">
 </p>
 
 ## Credits
@@ -72,7 +72,7 @@ The core architecture follows Karpathy's design faithfully:
 - **Human curates, LLM maintains** — the fundamental role division
 
 <p align="center">
-  <img src="assets/5-obsidian_compatibility.jpg" width="100%" alt="Obsidian Compatibility">
+  <img src="docs/assets/5-obsidian_compatibility.jpg" width="100%" alt="Obsidian Compatibility">
 </p>
 
 ## What We Changed & Added
@@ -130,7 +130,7 @@ Additional ingest enhancements beyond the original:
 ### 4. Knowledge Graph with Relevance Model
 
 <p align="center">
-  <img src="assets/3-knowledge_graph.jpg" width="100%" alt="Knowledge Graph">
+  <img src="docs/assets/3-knowledge_graph.jpg" width="100%" alt="Knowledge Graph">
 </p>
 
 The original mentions `[[wikilinks]]` for cross-references but has no graph analysis. We built a **full knowledge graph visualization and relevance engine**:
@@ -162,7 +162,7 @@ Not in the original. Automatic discovery of knowledge clusters using the **Louva
 - **Community legend** — shows top node label, member count, and cohesion per cluster
 
 <p align="center">
-  <img src="assets/kg_community.jpg" width="100%" alt="Louvain Community Detection">
+  <img src="docs/assets/kg_community.jpg" width="100%" alt="Louvain Community Detection">
 </p>
 
 ### 6. Graph Insights — Surprising Connections & Knowledge Gaps
@@ -185,7 +185,7 @@ Not in the original. The system **automatically analyzes graph structure** to su
 - Research topic shown in **editable confirmation dialog** before starting — user can refine topic and search queries
 
 <p align="center">
-  <img src="assets/kg_insights.jpg" width="100%" alt="Graph Insights">
+  <img src="docs/assets/kg_insights.jpg" width="100%" alt="Graph Insights">
 </p>
 
 ### 7. Optimized Query Retrieval Pipeline
@@ -265,7 +265,7 @@ The original suggests staying involved during ingest. We added an **asynchronous
 ### 12. Deep Research
 
 <p align="center">
-  <img src="assets/1-deepresearch.jpg" width="100%" alt="Deep Research">
+  <img src="docs/assets/1-deepresearch.jpg" width="100%" alt="Deep Research">
 </p>
 
 Not in the original. When the LLM identifies knowledge gaps:
@@ -284,7 +284,7 @@ Not in the original. When the LLM identifies knowledge gaps:
 ### 13. Browser Extension (Web Clipper)
 
 <p align="center">
-  <img src="assets/4-chrome_extension_webclipper.jpg" width="100%" alt="Chrome Extension Web Clipper">
+  <img src="docs/assets/4-chrome_extension_webclipper.jpg" width="100%" alt="Chrome Extension Web Clipper">
 </p>
 
 The original mentions Obsidian Web Clipper. We built a **dedicated Chrome Extension** (Manifest V3):
@@ -393,7 +393,7 @@ npm run tauri build    # Production build
 1. Open `chrome://extensions`
 2. Enable "Developer mode"
 3. Click "Load unpacked"
-4. Select the `extension/` directory
+4. Select the `desktop/extension/` directory
 
 ## Quick Start
 

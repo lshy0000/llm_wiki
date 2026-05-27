@@ -1,7 +1,7 @@
 # LLM Wiki
 
 <p align="center">
-  <img src="logo.jpg" width="128" height="128" style="border-radius: 22%;" alt="LLM Wiki Logo">
+  <img src="docs/logo.png" width="128" height="128" style="border-radius: 22%;" alt="LLM Wiki Logo">
 </p>
 
 <p align="center">
@@ -25,7 +25,7 @@
 ---
 
 <p align="center">
-  <img src="assets/overview.jpg" width="100%" alt="概览">
+  <img src="docs/assets/overview.jpg" width="100%" alt="概览">
 </p>
 
 ## 功能亮点
@@ -51,7 +51,7 @@ LLM Wiki 是一个跨平台桌面应用，能将你的文档自动转化为有�
 本项目基于 [Karpathy 的 LLM Wiki 方法论](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) —— 一套使用 LLM 构建个人知识库的方法论。我们将其核心理念实现为一个完整的桌面应用，并做了大量增强。
 
 <p align="center">
-  <img src="assets/llm_wiki_arch.jpg" width="100%" alt="LLM Wiki 架构图">
+  <img src="docs/assets/llm_wiki_arch.jpg" width="100%" alt="LLM Wiki 架构图">
 </p>
 
 ## 致谢
@@ -72,7 +72,7 @@ LLM Wiki 是一个跨平台桌面应用，能将你的文档自动转化为有�
 - **人类策展，LLM 维护** —— 基本角色分工
 
 <p align="center">
-  <img src="assets/5-obsidian_compatibility.jpg" width="100%" alt="Obsidian 兼容">
+  <img src="docs/assets/5-obsidian_compatibility.jpg" width="100%" alt="Obsidian 兼容">
 </p>
 
 ## 我们的修改与新增
@@ -130,7 +130,7 @@ LLM Wiki 是一个跨平台桌面应用，能将你的文档自动转化为有�
 ### 4. 知识图谱与关联度模型
 
 <p align="center">
-  <img src="assets/3-knowledge_graph.jpg" width="100%" alt="知识图谱">
+  <img src="docs/assets/3-knowledge_graph.jpg" width="100%" alt="知识图谱">
 </p>
 
 原始设计提到了 `[[wikilinks]]` 用于交叉引用，但没有图分析。我们构建了**完整的知识图谱可视化和关联度引擎**：
@@ -162,7 +162,7 @@ LLM Wiki 是一个跨平台桌面应用，能将你的文档自动转化为有�
 - **社区图例** —— 显示核心节点标签、成员数和内聚度
 
 <p align="center">
-  <img src="assets/kg_community.jpg" width="100%" alt="Louvain 社区检测">
+  <img src="docs/assets/kg_community.jpg" width="100%" alt="Louvain 社区检测">
 </p>
 
 ### 6. 图谱洞察 —— 惊奇连接与知识空白
@@ -185,7 +185,7 @@ LLM Wiki 是一个跨平台桌面应用，能将你的文档自动转化为有�
 - 研究主题在**可编辑确认对话框**中展示 —— 用户可修改主题和搜索查询后再启动
 
 <p align="center">
-  <img src="assets/kg_insights.jpg" width="100%" alt="图谱洞察">
+  <img src="docs/assets/kg_insights.jpg" width="100%" alt="图谱洞察">
 </p>
 
 ### 7. 优化的查询检索管线
@@ -265,7 +265,7 @@ LLM Wiki 是一个跨平台桌面应用，能将你的文档自动转化为有�
 ### 12. 深度研究
 
 <p align="center">
-  <img src="assets/1-deepresearch.jpg" width="100%" alt="深度研究">
+  <img src="docs/assets/1-deepresearch.jpg" width="100%" alt="深度研究">
 </p>
 
 原始设计中没有。当 LLM 识别出知识空白时：
@@ -284,7 +284,7 @@ LLM Wiki 是一个跨平台桌面应用，能将你的文档自动转化为有�
 ### 13. 浏览器扩展（网页剪藏）
 
 <p align="center">
-  <img src="assets/4-chrome_extension_webclipper.jpg" width="100%" alt="Chrome 扩展网页剪藏">
+  <img src="docs/assets/4-chrome_extension_webclipper.jpg" width="100%" alt="Chrome 扩展网页剪藏">
 </p>
 
 原始设计提到了 Obsidian Web Clipper。我们构建了**专用 Chrome 扩展**（Manifest V3）：
@@ -393,7 +393,7 @@ npm run tauri build    # 生产构建
 1. 打开 `chrome://extensions`
 2. 启用「开发者模式」
 3. 点击「加载已解压的扩展程序」
-4. 选择 `extension/` 目录
+4. 选择 `desktop/extension/` 目录
 
 ## 快速开始
 

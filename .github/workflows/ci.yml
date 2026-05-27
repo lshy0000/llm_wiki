@@ -39,7 +39,7 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: src-tauri
+          workspaces: desktop/src-tauri
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -50,8 +50,8 @@ jobs:
         run: npm install
 
       - name: Check frontend build
-        run: npx vite build
+        run: npx vite build --config frontend/vite.config.ts
 
       - name: Check Rust build
-        working-directory: src-tauri
+        working-directory: desktop/src-tauri
         run: cargo build

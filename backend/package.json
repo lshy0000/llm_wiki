@@ -1,0 +1,26 @@
+{
+  "name": "@llm-wiki/backend",
+  "private": true,
+  "version": "0.4.14",
+  "type": "module",
+  "scripts": {
+    "dev": "node ../node_modules/tsx/dist/cli.mjs src/index.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.2.0",
+    "@fastify/multipart": "^10.0.0",
+    "fastify": "^5.8.5",
+    "graphology": "^0.26.0",
+    "graphology-communities-louvain": "^2.0.2",
+    "ldapts": "^8.1.8",
+    "pg": "^8.21.0",
+    "pino": "^9.14.0",
+    "tsx": "^4.22.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.2",
+    "@types/pg": "^8.20.0",
+    "typescript": "^5.7.3"
+  }
+}

@@ -68,8 +68,8 @@ jobs:
       - name: Use ARM64 pdfium binary (Ubuntu ARM only)
         if: matrix.platform == 'ubuntu-22.04-arm'
         run: |
-          cp src-tauri/pdfium/libpdfium-arm64.so src-tauri/pdfium/libpdfium.so
-          file src-tauri/pdfium/libpdfium.so
+          cp desktop/src-tauri/pdfium/libpdfium-arm64.so desktop/src-tauri/pdfium/libpdfium.so
+          file desktop/src-tauri/pdfium/libpdfium.so
 
       - name: Install protoc (Windows)
         if: matrix.platform == 'windows-latest'
@@ -96,6 +96,7 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
+          projectPath: desktop/src-tauri
           # Tag-triggered runs publish a real GitHub Release.
           # Manual (workflow_dispatch) runs leave tagName/releaseName
           # empty so tauri-action skips the release-upload step and
@@ -122,11 +123,11 @@ jobs:
           # target/aarch64-apple-darwin/release/...) and default
           # (target/release/...) build paths.
           path: |
-            src-tauri/target/**/release/bundle/msi/*.msi
-            src-tauri/target/**/release/bundle/nsis/*.exe
-            src-tauri/target/**/release/bundle/dmg/*.dmg
-            src-tauri/target/**/release/bundle/deb/*.deb
-            src-tauri/target/**/release/bundle/appimage/*.AppImage
+            desktop/src-tauri/target/**/release/bundle/msi/*.msi
+            desktop/src-tauri/target/**/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/**/release/bundle/dmg/*.dmg
+            desktop/src-tauri/target/**/release/bundle/deb/*.deb
+            desktop/src-tauri/target/**/release/bundle/appimage/*.AppImage
           if-no-files-found: warn
           retention-days: 14
 
@@ -149,13 +150,13 @@ jobs:
           APP_VERSION=$(node -p "require('./package.json').version")
           node -e "
             const fs = require('fs');
-            const p = 'extension/manifest.json';
+            const p = 'desktop/extension/manifest.json';
             const m = JSON.parse(fs.readFileSync(p, 'utf-8'));
             m.version = '${APP_VERSION}';
             fs.writeFileSync(p, JSON.stringify(m, null, 2) + '\n');
           "
           mkdir -p dist-extension
-          (cd extension && zip -r "../dist-extension/llm-wiki-extension-${APP_VERSION}.zip" . -x "*.DS_Store")
+          (cd desktop/extension && zip -r "../../dist-extension/llm-wiki-extension-${APP_VERSION}.zip" . -x "*.DS_Store")
           ls -la dist-extension
 
       - name: Attach extension zip to release

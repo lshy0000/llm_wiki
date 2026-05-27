@@ -1,7 +1,7 @@
 # LLM Wiki
 
 <p align="center">
-  <img src="logo.jpg" width="128" height="128" style="border-radius: 22%;" alt="LLM Wiki Logo">
+  <img src="docs/logo.png" width="128" height="128" style="border-radius: 22%;" alt="LLM Wiki Logo">
 </p>
 
 <p align="center">
@@ -25,7 +25,7 @@
 ---
 
 <p align="center">
-  <img src="assets/overview.jpg" width="100%" alt="概要">
+  <img src="docs/assets/overview.jpg" width="100%" alt="概要">
 </p>
 
 ## 主な機能
@@ -51,7 +51,7 @@ LLM Wiki は、手元の文書を整理された相互リンク付きの知識�
 このプロジェクトは、LLM を使ってパーソナル知識ベースを構築する方法論である [Karpathy の LLM Wiki パターン](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) に基づいています。そのコアアイデアを実用的なデスクトップアプリとして実装し、大幅な拡張を加えました。
 
 <p align="center">
-  <img src="assets/llm_wiki_arch.jpg" width="100%" alt="LLM Wiki アーキテクチャ">
+  <img src="docs/assets/llm_wiki_arch.jpg" width="100%" alt="LLM Wiki アーキテクチャ">
 </p>
 
 ## クレジット
@@ -72,7 +72,7 @@ LLM Wiki は、手元の文書を整理された相互リンク付きの知識�
 - **人間がキュレーションし、LLM が維持する** という基本的な役割分担
 
 <p align="center">
-  <img src="assets/5-obsidian_compatibility.jpg" width="100%" alt="Obsidian 互換">
+  <img src="docs/assets/5-obsidian_compatibility.jpg" width="100%" alt="Obsidian 互換">
 </p>
 
 ## 変更点と追加機能
@@ -133,7 +133,7 @@ LLM Wiki は、手元の文書を整理された相互リンク付きの知識�
 ### 4. 関連度モデルを備えた知識グラフ
 
 <p align="center">
-  <img src="assets/3-knowledge_graph.jpg" width="100%" alt="知識グラフ">
+  <img src="docs/assets/3-knowledge_graph.jpg" width="100%" alt="知識グラフ">
 </p>
 
 元の設計では相互参照のための `[[wikilinks]]` には触れているものの、グラフ分析はありません。本プロジェクトでは**完全な知識グラフ可視化と関連度エンジン**を構築しました。
@@ -167,7 +167,7 @@ LLM Wiki は、手元の文書を整理された相互リンク付きの知識�
 - **コミュニティ凡例** — 代表ノードのラベル、メンバー数、凝集度を表示
 
 <p align="center">
-  <img src="assets/kg_community.jpg" width="100%" alt="Louvain コミュニティ検出">
+  <img src="docs/assets/kg_community.jpg" width="100%" alt="Louvain コミュニティ検出">
 </p>
 
 ### 6. グラフインサイト —— 意外な関連と知識の空白
@@ -193,7 +193,7 @@ LLM Wiki は、手元の文書を整理された相互リンク付きの知識�
 - 開始前に**編集可能な確認ダイアログ**にリサーチトピックと検索クエリを表示。ユーザーが調整してから実行可能
 
 <p align="center">
-  <img src="assets/kg_insights.jpg" width="100%" alt="グラフインサイト">
+  <img src="docs/assets/kg_insights.jpg" width="100%" alt="グラフインサイト">
 </p>
 
 ### 7. 最適化されたクエリ検索パイプライン
@@ -273,7 +273,7 @@ LLM Wiki は、手元の文書を整理された相互リンク付きの知識�
 ### 12. Deep Research
 
 <p align="center">
-  <img src="assets/1-deepresearch.jpg" width="100%" alt="Deep Research">
+  <img src="docs/assets/1-deepresearch.jpg" width="100%" alt="Deep Research">
 </p>
 
 元の設計にはありません。LLM が知識の空白を特定したときに利用します。
@@ -292,7 +292,7 @@ LLM Wiki は、手元の文書を整理された相互リンク付きの知識�
 ### 13. ブラウザ拡張（Web Clipper）
 
 <p align="center">
-  <img src="assets/4-chrome_extension_webclipper.jpg" width="100%" alt="Chrome 拡張 Web Clipper">
+  <img src="docs/assets/4-chrome_extension_webclipper.jpg" width="100%" alt="Chrome 拡張 Web Clipper">
 </p>
 
 元の設計では Obsidian Web Clipper が言及されています。本プロジェクトでは**専用の Chrome 拡張**（Manifest V3）を構築しました。
@@ -402,7 +402,7 @@ npm run tauri build    # 本番ビルド
 1. `chrome://extensions` を開く
 2. 「デベロッパーモード」を有効にする
 3. 「パッケージ化されていない拡張機能を読み込む」をクリック
-4. `extension/` ディレクトリを選択
+4. `desktop/extension/` ディレクトリを選択
 
 ## クイックスタート
 
