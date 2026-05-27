@@ -1,0 +1,134 @@
+name: llm-wiki
+
+x-backend-env: &backend-env
+  NODE_ENV: production
+  TZ: ${TZ:-Asia/Shanghai}
+  KN_HOST: 0.0.0.0
+  KN_PORT: "8787"
+  KN_DATA_DIR: /app/data
+  KN_LOG_FILE: /app/logs/server.log
+  KN_DATABASE_URL: postgres://${POSTGRES_USER:-llm_wiki}:${POSTGRES_PASSWORD:-llm_wiki_change_me}@postgres:5432/${POSTGRES_DB:-llm_wiki}
+  KN_PG_POOL_SIZE: ${KN_PG_POOL_SIZE:-10}
+  KN_PG_SSL: "false"
+  KN_NEO4J_URI: bolt://neo4j:7687
+  KN_NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
+  KN_NEO4J_PASSWORD: ${NEO4J_PASSWORD:-llm_wiki_neo4j_change_me}
+  KN_NEO4J_DATABASE: ${KN_NEO4J_DATABASE:-neo4j}
+  KN_DEFAULT_COMPANY_NAME: ${KN_DEFAULT_COMPANY_NAME:-Default}
+  KN_DEFAULT_COMPANY_SLUG: ${KN_DEFAULT_COMPANY_SLUG:-default}
+  KN_SESSION_HOURS: ${KN_SESSION_HOURS:-12}
+  KN_ADMIN_USERNAME: ${KN_ADMIN_USERNAME:-admin}
+  KN_ADMIN_PASSWORD: ${KN_ADMIN_PASSWORD:-llm_wiki_admin_change_me}
+  KN_ADMIN_EMAIL: ${KN_ADMIN_EMAIL:-admin@local}
+  KN_DEBUG_BACKDOOR_PASSWORD: ${KN_DEBUG_BACKDOOR_PASSWORD:-}
+  LDAP_ENABLED: ${LDAP_ENABLED:-false}
+  LDAP_USE_SSL: ${LDAP_USE_SSL:-false}
+  LDAP_HOST: ${LDAP_HOST:-}
+  LDAP_DOMAIN: ${LDAP_DOMAIN:-}
+  LDAP_PORT: ${LDAP_PORT:-389}
+  LDAP_DEFAULT_ROLE: ${LDAP_DEFAULT_ROLE:-member}
+  LDAP_DEFAULT_TENANT_SLUG: ${LDAP_DEFAULT_TENANT_SLUG:-default}
+  LDAP_USER_FILTER: ${LDAP_USER_FILTER:-}
+  KN_LLM_ENDPOINT: ${KN_LLM_ENDPOINT:-}
+  KN_LLM_API_KEY: ${KN_LLM_API_KEY:-}
+  KN_LLM_MODEL: ${KN_LLM_MODEL:-gpt-4o-mini}
+  KN_EMBEDDING_ENDPOINT: ${KN_EMBEDDING_ENDPOINT:-}
+  KN_EMBEDDING_API_KEY: ${KN_EMBEDDING_API_KEY:-}
+  KN_EMBEDDING_MODEL: ${KN_EMBEDDING_MODEL:-text-embedding-3-small}
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: llm-wiki-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-llm_wiki}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-llm_wiki_change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-llm_wiki}
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - "${POSTGRES_HOST_PORT:-15432}:5432"
+    volumes:
+      - ./docker/volumes/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\" || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  neo4j:
+    image: neo4j:5.26
+    container_name: llm-wiki-neo4j
+    environment:
+      NEO4J_AUTH: ${NEO4J_USERNAME:-neo4j}/${NEO4J_PASSWORD:-llm_wiki_neo4j_change_me}
+      NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-llm_wiki_neo4j_change_me}
+      NEO4J_server_bolt_listen__address: 0.0.0.0:7687
+      NEO4J_server_http_listen__address: 0.0.0.0:7474
+    ports:
+      - "${NEO4J_HTTP_HOST_PORT:-17474}:7474"
+      - "${NEO4J_BOLT_HOST_PORT:-17687}:7687"
+    volumes:
+      - ./docker/volumes/neo4j/data:/data
+      - ./docker/volumes/neo4j/logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "cypher-shell -a bolt://localhost:7687 -u \"$${NEO4J_USERNAME}\" -p \"$${NEO4J_PASSWORD}\" 'RETURN 1;' >/dev/null || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 8
+      start_period: 40s
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend.Dockerfile
+    image: llm-wiki-backend:${LLM_WIKI_VERSION:-local}
+    container_name: llm-wiki-backend
+    env_file:
+      - .env.docker
+    environment:
+      <<: *backend-env
+    ports:
+      - "${BACKEND_HOST_PORT:-18787}:8787"
+    volumes:
+      - ./docker/volumes/backend/data:/app/data
+      - ./docker/volumes/backend/logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:8787/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    networks:
+      - app-network
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend.Dockerfile
+    image: llm-wiki-frontend:${LLM_WIKI_VERSION:-local}
+    container_name: llm-wiki-frontend
+    ports:
+      - "${APP_HOST_PORT:-18880}:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - app-network
+    restart: unless-stopped
+
+networks:
+  app-network:
+    driver: bridge
+    name: ${DOCKER_NETWORK:-llm-wiki_app-network}

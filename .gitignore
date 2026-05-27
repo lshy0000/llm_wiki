@@ -20,6 +20,7 @@ desktop/src-tauri/gen/
 # Environment files
 .env
 .env.local
+.env.docker
 .env.*.local
 
 # Reference / vendor trees (not part of this repo's build)
@@ -54,6 +55,7 @@ pnpm-debug.log*
 # Backend local data
 backend/.kn-data/
 .kn-data/
+docker/volumes/
 
 # Internal tooling
 .superpowers/
