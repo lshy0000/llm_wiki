@@ -50,8 +50,10 @@ export interface KnowledgeRepository {
   countCompanyMembers(companyId: string): Promise<number>
   ensureCompanyMember(companyId: string, identityId: string, role: CompanyMemberRole): Promise<CompanyMember>
   listCompanyModels(companyId: string): Promise<CompanyModel[]>
+  getCompanyModel(companyId: string, modelId: string): Promise<CompanyModel | undefined>
   getDefaultCompanyModel(companyId: string, capability: "llm" | "embedding" | "vision"): Promise<CompanyModel | undefined>
   saveCompanyModel(model: CompanyModel): Promise<CompanyModel>
+  deleteCompanyModel(companyId: string, modelId: string): Promise<boolean>
   createSession(input: {
     tokenHash: string
     identityId: string
@@ -65,6 +67,7 @@ export interface KnowledgeRepository {
   getKnowledgeBase(kbId: string): Promise<KnowledgeBase | undefined>
   saveKnowledgeBase(kb: KnowledgeBase): Promise<KnowledgeBase>
   touchKnowledgeBase(kbId: string): Promise<void>
+  deleteKnowledgeBase(kbId: string): Promise<void>
   saveSource(source: SourceDocument): Promise<SourceDocument>
   listSources(kbId: string): Promise<SourceDocument[]>
   getSource(sourceId: string): Promise<SourceDocument | undefined>
@@ -279,6 +282,7 @@ export class PostgresRepository implements KnowledgeRepository {
       ALTER TABLE knowledge_bases DROP CONSTRAINT IF EXISTS knowledge_bases_type_check;
       ALTER TABLE knowledge_bases ADD CONSTRAINT knowledge_bases_type_check CHECK (type = 'llm_wiki');
       ALTER TABLE knowledge_bases DROP COLUMN IF EXISTS data_version;
+      ALTER TABLE knowledge_bases ADD COLUMN IF NOT EXISTS embedding_model_id TEXT REFERENCES company_models(id) ON DELETE SET NULL;
 
       ALTER TABLE sources ADD COLUMN IF NOT EXISTS company_id TEXT REFERENCES companies(id) ON DELETE CASCADE;
       ALTER TABLE sources ADD COLUMN IF NOT EXISTS root TEXT NOT NULL DEFAULT 'raw';
@@ -424,6 +428,14 @@ export class PostgresRepository implements KnowledgeRepository {
     return result.rows.map((row) => this.mapCompanyModel(row))
   }
 
+  async getCompanyModel(companyId: string, modelId: string): Promise<CompanyModel | undefined> {
+    const result = await this.pool.query<Row>(
+      "SELECT * FROM company_models WHERE company_id = $1 AND id = $2",
+      [companyId, modelId],
+    )
+    return result.rows[0] ? this.mapCompanyModel(result.rows[0]) : undefined
+  }
+
   async getDefaultCompanyModel(companyId: string, capability: "llm" | "embedding" | "vision"): Promise<CompanyModel | undefined> {
     const column = capability === "llm" ? "is_default_llm" : capability === "embedding" ? "is_default_embedding" : "is_default_vision"
     const result = await this.pool.query<Row>(
@@ -494,6 +506,16 @@ export class PostgresRepository implements KnowledgeRepository {
     } finally {
       client.release()
     }
+  }
+
+  async deleteCompanyModel(companyId: string, modelId: string): Promise<boolean> {
+    // company_models 被知识库引用时使用 ON DELETE SET NULL；删除模型只移除这个调用配置，
+    // 不会级联删除知识库。默认模型标记也随记录一起消失，前端会真实显示“暂无可选/待配置”。
+    const result = await this.pool.query(
+      "DELETE FROM company_models WHERE company_id = $1 AND id = $2",
+      [companyId, modelId],
+    )
+    return (result.rowCount ?? 0) > 0
   }
 
   async createSession(input: {
@@ -602,8 +624,8 @@ export class PostgresRepository implements KnowledgeRepository {
   async saveKnowledgeBase(kb: KnowledgeBase): Promise<KnowledgeBase> {
     const result = await this.pool.query<Row>(
       `INSERT INTO knowledge_bases
-         (id, company_id, created_by, visibility, type, name, description, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         (id, company_id, created_by, visibility, type, name, description, embedding_model_id, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        ON CONFLICT (id)
        DO UPDATE SET company_id = EXCLUDED.company_id,
                      created_by = EXCLUDED.created_by,
@@ -611,15 +633,20 @@ export class PostgresRepository implements KnowledgeRepository {
                      type = EXCLUDED.type,
                      name = EXCLUDED.name,
                      description = EXCLUDED.description,
+                     embedding_model_id = EXCLUDED.embedding_model_id,
                      updated_at = EXCLUDED.updated_at
        RETURNING *`,
-      [kb.id, kb.companyId, kb.createdBy, kb.visibility, kb.type, kb.name, kb.description, kb.createdAt, kb.updatedAt],
+      [kb.id, kb.companyId, kb.createdBy, kb.visibility, kb.type, kb.name, kb.description, kb.embeddingModelId ?? null, kb.createdAt, kb.updatedAt],
     )
     return this.mapKnowledgeBase(result.rows[0])
   }
 
   async touchKnowledgeBase(kbId: string): Promise<void> {
     await this.pool.query("UPDATE knowledge_bases SET updated_at = $1 WHERE id = $2", [nowIso(), kbId])
+  }
+
+  async deleteKnowledgeBase(kbId: string): Promise<void> {
+    await this.pool.query("DELETE FROM knowledge_bases WHERE id = $1", [kbId])
   }
 
   async saveSource(source: SourceDocument): Promise<SourceDocument> {
@@ -1079,6 +1106,7 @@ export class PostgresRepository implements KnowledgeRepository {
       type: "llm_wiki",
       name: String(row.name),
       description: String(row.description ?? ""),
+      embeddingModelId: row.embedding_model_id ? String(row.embedding_model_id) : undefined,
       createdAt: iso(row.created_at),
       updatedAt: iso(row.updated_at),
     }

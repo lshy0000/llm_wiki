@@ -467,7 +467,7 @@ export const LLM_PRESETS: LlmPreset[] = [
   {
     id: "custom",
     label: "Custom",
-    hint: "Any OpenAI- or Anthropic-compatible endpoint",
+    hint: "Any /v1 or Messages endpoint",
     provider: "custom",
     // Wire protocol is chosen via the "API 模式" toggle in the expanded
     // panel — no need for separate presets per mode. User supplies the

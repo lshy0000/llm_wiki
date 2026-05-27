@@ -85,7 +85,7 @@ export const MODEL_PROVIDER_MANIFESTS: Record<ModelProvider, ModelProviderManife
     apiKeyRequired: true,
     defaultModel: "qwen-plus",
     defaultCapabilities: ["llm", "vision"],
-    description: "阿里云百炼 OpenAI 兼容模式，使用 DashScope API Key。",
+    description: "阿里云百炼 DashScope 模式，使用 DashScope API Key。",
   },
   deepseek: {
     provider: "deepseek",
@@ -107,7 +107,7 @@ export const MODEL_PROVIDER_MANIFESTS: Record<ModelProvider, ModelProviderManife
     apiKeyRequired: true,
     defaultModel: "kimi-k2.6",
     defaultCapabilities: ["llm"],
-    description: "月之暗面 Kimi OpenAI 兼容 API，使用 Moonshot API Key。",
+    description: "月之暗面 Kimi 官方 API，使用 Moonshot API Key。",
   },
   claudecode: {
     provider: "claudecode",
@@ -129,7 +129,7 @@ export const MODEL_PROVIDER_MANIFESTS: Record<ModelProvider, ModelProviderManife
     apiKeyRequired: false,
     defaultModel: "llama3.1",
     defaultCapabilities: ["llm"],
-    description: "本地 Ollama OpenAI 兼容接口，通常不需要 API Key。",
+    description: "本地 Ollama /v1 接口，通常不需要 API Key。",
   },
   custom: {
     provider: "custom",
@@ -140,7 +140,7 @@ export const MODEL_PROVIDER_MANIFESTS: Record<ModelProvider, ModelProviderManife
     apiKeyRequired: false,
     defaultModel: "",
     defaultCapabilities: ["llm"],
-    description: "自定义服务只在这里选择 OpenAI 兼容或 Anthropic Messages 兼容。",
+    description: "自定义服务只在这里选择 API 模式。",
   },
 }
 

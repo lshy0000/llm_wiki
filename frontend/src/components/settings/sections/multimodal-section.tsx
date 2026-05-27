@@ -9,7 +9,7 @@ interface Props {
 }
 
 const PROVIDER_OPTIONS: Array<{ value: SettingsDraft["multimodalProvider"]; label: string }> = [
-  { value: "custom", label: "Custom (OpenAI-compat)" },
+  { value: "custom", label: "Custom (/v1)" },
   { value: "openai", label: "OpenAI" },
   { value: "anthropic", label: "Anthropic" },
   { value: "google", label: "Google (Gemini)" },
@@ -199,7 +199,7 @@ export function MultimodalSection({ draft, setDraft }: Props) {
                         )
                       : t(
                           "settings.sections.multimodal.customEndpointHint",
-                          "OpenAI-compatible /v1 base. LM Studio, llama.cpp server, vLLM, LocalAI all work.",
+                          "/v1 base. LM Studio, llama.cpp server, vLLM, LocalAI all work.",
                         )}
                   </p>
                 </div>

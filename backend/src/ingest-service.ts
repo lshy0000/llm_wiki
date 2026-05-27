@@ -313,7 +313,7 @@ export class IngestService {
         text,
         ordinal,
         tokens: tokenize(text),
-        embedding: await this.llm.embedForCompany(companyId, text),
+        embedding: await this.llm.embedForKnowledgeBase(kbId, text),
       })
       ordinal += 1
     }

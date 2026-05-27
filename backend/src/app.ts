@@ -64,6 +64,10 @@ function createAppInstance() {
   return Fastify({ loggerInstance: createLogger() })
 }
 
+function modelEndpointKey(endpoint: string): string {
+  return endpoint.trim().replace(/\/+$/, "").toLowerCase()
+}
+
 type AppInstance = ReturnType<typeof createAppInstance>
 
 export async function buildApp(dataDir = path.resolve(process.cwd(), ".kn-data")): Promise<{
@@ -71,7 +75,12 @@ export async function buildApp(dataDir = path.resolve(process.cwd(), ".kn-data")
   services: AppServices
 }> {
   const app = createAppInstance()
-  await app.register(cors, { origin: true })
+  await app.register(cors, {
+    origin: true,
+    // 浏览器预检必须明确允许 DELETE/PATCH，否则模型删除、知识库删除和嵌入模型切换会被 CORS 挡在后端之前。
+    methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["authorization", "content-type"],
+  })
   await app.register(multipart, { limits: { fileSize: 200 * 1024 * 1024, files: 128 } })
 
   const databaseUrl = process.env.KN_DATABASE_URL ?? process.env.DATABASE_URL
@@ -223,6 +232,16 @@ function registerRoutes(app: AppInstance, services: AppServices): void {
     const endpoint = normalizeModelEndpoint(provider, body.endpoint)
     if (provider === "custom" && !endpoint) return reply.code(400).send({ error: "custom model endpoint is required" })
     const capabilities = normalizeModelCapabilities(body.capabilities)
+    // 公司模型的业务唯一键是“最终 endpoint + 模型 ID”。名称只是面向用户展示的主名称，
+    // 允许改名，但不能用不同名称重复保存同一个实际调用目标。
+    const duplicate = (await services.repo.listCompanyModels(auth.company.id)).find((item) =>
+      item.id !== body.id &&
+      item.model.trim() === modelName &&
+      modelEndpointKey(item.endpoint) === modelEndpointKey(endpoint),
+    )
+    if (duplicate) {
+      return reply.code(409).send({ error: `同一 Endpoint 和模型 ID 已存在：${duplicate.name}` })
+    }
     const model: CompanyModel = {
       id: body.id || id("mdl"),
       companyId: auth.company.id,
@@ -242,29 +261,69 @@ function registerRoutes(app: AppInstance, services: AppServices): void {
     return sanitizeCompanyModel(await services.repo.saveCompanyModel(model))
   })
 
+  app.delete<{ Params: { modelId: string } }>("/api/company/models/:modelId", async (request, reply) => {
+    const auth = await requireAuth(request, reply, services)
+    if (!auth) return
+    if (!isCompanyAdmin(auth)) return reply.code(403).send({ error: "Company admin is required" })
+    const deleted = await services.repo.deleteCompanyModel(auth.company.id, request.params.modelId)
+    if (!deleted) return reply.code(404).send({ error: "model not found" })
+    return { ok: true }
+  })
+
   app.get("/api/kbs", async (request, reply) => {
     const auth = await requireAuth(request, reply, services)
     if (!auth) return
     return services.project.listKnowledgeBases(isPlatformAdmin(auth) ? undefined : auth.company.id, isPlatformAdmin(auth) ? undefined : auth.identity.id)
   })
-  app.post<{ Body: { name?: string; description?: string; visibility?: "company" | "creator_only" } }>("/api/kbs", async (request, reply) => {
+  app.post<{ Body: { name?: string; description?: string; visibility?: "company" | "creator_only"; embeddingModelId?: string } }>("/api/kbs", async (request, reply) => {
     const auth = await requireAuth(request, reply, services)
     if (!auth) return
     const name = request.body?.name?.trim()
     if (!name) return reply.code(400).send({ error: "name is required" })
     const visibility = request.body.visibility === "creator_only" ? "creator_only" : "company"
-    return services.project.createKnowledgeBase({
-      companyId: auth.company.id,
-      createdBy: auth.identity.id,
-      name,
-      description: request.body.description,
-      visibility,
-    })
+    try {
+      return await services.project.createKnowledgeBase({
+        companyId: auth.company.id,
+        createdBy: auth.identity.id,
+        name,
+        description: request.body.description,
+        visibility,
+        embeddingModelId: request.body.embeddingModelId?.trim() || undefined,
+      })
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) })
+    }
+  })
+  app.patch<{ Params: { kbId: string }; Body: { embeddingModelId?: string | null } }>("/api/kbs/:kbId", async (request, reply) => {
+    const auth = await requireAuth(request, reply, services)
+    if (!auth) return
+    if (!isCompanyAdmin(auth)) return reply.code(403).send({ error: "Company admin is required" })
+    const kb = await getCompanyKnowledgeBase(services, auth, request.params.kbId, reply)
+    if (!kb) return
+    const embeddingModelId = request.body?.embeddingModelId === null
+      ? undefined
+      : request.body?.embeddingModelId?.trim() || undefined
+    try {
+      return await services.project.updateKnowledgeBaseEmbeddingModel(kb.id, embeddingModelId)
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : String(err) })
+    }
   })
   app.get<{ Params: { kbId: string } }>("/api/kbs/:kbId", async (request, reply) => {
     const auth = await requireAuth(request, reply, services)
     if (!auth) return
     return getCompanyKnowledgeBase(services, auth, request.params.kbId, reply)
+  })
+  app.delete<{ Params: { kbId: string } }>("/api/kbs/:kbId", async (request, reply) => {
+    const auth = await requireAuth(request, reply, services)
+    if (!auth) return
+    if (!isCompanyAdmin(auth)) return reply.code(403).send({ error: "Company admin is required" })
+    const kb = await services.project.getKnowledgeBase(request.params.kbId).catch(() => undefined)
+    if (!kb || (!isPlatformAdmin(auth) && kb.companyId !== auth.company.id)) {
+      return reply.code(404).send({ error: "Knowledge base not found" })
+    }
+    await services.project.deleteKnowledgeBase(kb.id)
+    return { ok: true }
   })
 
   app.post<{ Params: { kbId: string } }>("/api/kbs/:kbId/sources", async (request, reply) => {

@@ -6,6 +6,7 @@ export interface KnowledgeBase {
   type: "llm_wiki"
   name: string
   description: string
+  embeddingModelId?: string
   createdAt: string
   updatedAt: string
 }

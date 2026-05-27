@@ -15,8 +15,10 @@ export class ProjectService {
     name: string
     description?: string
     visibility?: KnowledgeBase["visibility"]
+    embeddingModelId?: string
   }): Promise<KnowledgeBase> {
     const now = nowIso()
+    const embeddingModelId = await this.resolveEmbeddingModelId(input.companyId, input.embeddingModelId)
     const kb: KnowledgeBase = {
       id: id("kb"),
       companyId: input.companyId,
@@ -25,6 +27,7 @@ export class ProjectService {
       type: "llm_wiki",
       name: input.name.trim(),
       description: input.description?.trim() ?? "",
+      embeddingModelId,
       createdAt: now,
       updatedAt: now,
     }
@@ -48,6 +51,46 @@ export class ProjectService {
     const kb = await this.repo.getKnowledgeBase(kbId)
     if (!kb) throw new Error("Knowledge base not found")
     return kb
+  }
+
+  async deleteKnowledgeBase(kbId: string): Promise<void> {
+    const kb = await this.repo.getKnowledgeBase(kbId)
+    if (!kb) throw new Error("Knowledge base not found")
+    // 先删除数据库主记录，让 PostgreSQL 通过 ON DELETE CASCADE 清理 sources/jobs/pages/chunks/reviews 等索引数据；
+    // 再删除磁盘目录，避免目录已删但数据库仍指向不存在文件。路由层已完成公司权限校验。
+    await this.repo.deleteKnowledgeBase(kbId)
+    await this.storage.deleteKnowledgeBase(kbId)
+  }
+
+  async updateKnowledgeBaseEmbeddingModel(kbId: string, embeddingModelId?: string): Promise<KnowledgeBase> {
+    const kb = await this.repo.getKnowledgeBase(kbId)
+    if (!kb) throw new Error("Knowledge base not found")
+    let resolved: string | undefined
+    if (embeddingModelId) {
+      const model = await this.repo.getCompanyModel(kb.companyId, embeddingModelId)
+      if (!model) throw new Error("Embedding model not found")
+      if (!model.capabilities.includes("embedding")) throw new Error("Model does not support embedding")
+      resolved = model.id
+    }
+    const updated: KnowledgeBase = {
+      ...kb,
+      embeddingModelId: resolved,
+      updatedAt: nowIso(),
+    }
+    return this.repo.saveKnowledgeBase(updated)
+  }
+
+  private async resolveEmbeddingModelId(companyId: string, embeddingModelId?: string): Promise<string | undefined> {
+    if (embeddingModelId) {
+      const model = await this.repo.getCompanyModel(companyId, embeddingModelId)
+      if (!model) throw new Error("Embedding model not found")
+      if (!model.capabilities.includes("embedding")) throw new Error("Model does not support embedding")
+      return model.id
+    }
+    // 创建知识库时把当时的默认 embedding 模型固化到 KB 上；
+    // 后续公司默认模型变化不会悄悄改变已有知识库的向量空间，避免检索时新旧向量混用。
+    const fallback = await this.repo.getDefaultCompanyModel(companyId, "embedding")
+    return fallback?.id
   }
 
   private pageFromContent(kb: KnowledgeBase, key: string, content: string, now: string): WikiPage {

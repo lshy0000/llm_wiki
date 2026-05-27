@@ -106,6 +106,10 @@ export class LlmGateway {
     return this.embedWithConfig(await this.resolveModel(companyId, "embedding"), text)
   }
 
+  async embedForKnowledgeBase(kbId: string, text: string): Promise<number[] | undefined> {
+    return this.embedWithConfig(await this.resolveEmbeddingModelForKb(kbId), text)
+  }
+
   private async embedWithConfig(model: RuntimeModelConfig | undefined, text: string): Promise<number[] | undefined> {
     return embedWithProvider(model, text)
   }
@@ -133,6 +137,18 @@ export class LlmGateway {
     const companyModel = await this.repo?.getDefaultCompanyModel(companyId, capability)
     if (companyModel) return this.toRuntimeModel(companyModel)
     return this.envModel(capability)
+  }
+
+  private async resolveEmbeddingModelForKb(kbId: string): Promise<RuntimeModelConfig | undefined> {
+    const kb = await this.repo?.getKnowledgeBase(kbId)
+    if (!kb) return undefined
+    // 向量检索必须和摄取时使用同一个 embedding 模型，否则 query 向量和 page chunk 向量维度/语义空间可能不一致。
+    // 知识库显式绑定模型时优先使用绑定模型；绑定模型被删除或不再支持 embedding 时，回退到公司默认模型。
+    if (kb.embeddingModelId) {
+      const model = await this.repo?.getCompanyModel(kb.companyId, kb.embeddingModelId)
+      if (model?.capabilities.includes("embedding")) return this.toRuntimeModel(model)
+    }
+    return this.resolveModel(kb.companyId, "embedding")
   }
 
   private toRuntimeModel(model: CompanyModel): RuntimeModelConfig {

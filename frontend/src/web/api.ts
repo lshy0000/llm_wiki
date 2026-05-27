@@ -14,7 +14,12 @@ import type {
   WikiTreeGroup,
 } from "./types"
 
-export const API_BASE = import.meta.env.VITE_KN_API_BASE || "http://127.0.0.1:8787"
+/**
+ * 前端所有服务端接口固定请求同源 `/api`。
+ * 开发和 preview 环境由 vite.config.ts 代理到 KN_PORT，生产环境必须由反向代理转发；
+ * 这里不要再拼 `http://127.0.0.1:8787` 之类的后端地址，否则桌面壳的 Origin 会触发 CORS 预检。
+ */
+export const API_BASE = ""
 const TOKEN_KEY = "kn.auth.token"
 
 export function getAuthToken(): string | null {
@@ -82,15 +87,33 @@ export const api = {
       method: "POST",
       body: JSON.stringify(model),
     }),
+  deleteCompanyModel: (modelId: string) =>
+    request<{ ok: true }>(`/api/company/models/${encodeURIComponent(modelId)}`, {
+      method: "DELETE",
+    }),
   testCompanyModel: (model: Pick<Partial<CompanyModel>, "provider" | "protocol" | "endpoint" | "model"> & { apiKey?: string }) =>
     request<ModelProviderTestResult>("/api/company/models/test", {
       method: "POST",
       body: JSON.stringify(model),
     }),
-  createKb: (name: string, description: string, visibility: "company" | "creator_only") =>
+  createKb: (
+    name: string,
+    description: string,
+    visibility: "company" | "creator_only",
+    embeddingModelId?: string,
+  ) =>
     request<KnowledgeBase>("/api/kbs", {
       method: "POST",
-      body: JSON.stringify({ name, description, visibility }),
+      body: JSON.stringify({ name, description, visibility, embeddingModelId }),
+    }),
+  updateKbEmbeddingModel: (kbId: string, embeddingModelId: string | null) =>
+    request<KnowledgeBase>(`/api/kbs/${encodeURIComponent(kbId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ embeddingModelId }),
+    }),
+  deleteKb: (kbId: string) =>
+    request<{ ok: true }>(`/api/kbs/${encodeURIComponent(kbId)}`, {
+      method: "DELETE",
     }),
   uploadFiles: (kbId: string, files: Array<{ file: File; relativePath: string }>) => {
     const form = new FormData()

@@ -10,6 +10,16 @@ const frontendRoot = __dirname
 const repoRoot = path.resolve(frontendRoot, "..")
 
 const pkgJson = JSON.parse(readFileSync(path.join(frontendRoot, "package.json"), "utf-8"))
+const knApiPort = process.env.KN_PORT || "8787"
+const knApiTarget = `http://127.0.0.1:${knApiPort}`
+// 前端代码只允许请求同源 /api；开发和预览时由 Vite 在这里统一转发到后端。
+// 这样 DELETE/PATCH 等预检请求不会从桌面壳 Origin 直接打后端，避免再次出现 CORS 方法白名单问题。
+const knApiProxy = {
+  "/api": {
+    target: knApiTarget,
+    changeOrigin: true,
+  },
+} as const
 
 export default defineConfig(async () => ({
   root: frontendRoot,
@@ -45,6 +55,10 @@ export default defineConfig(async () => ({
     watch: {
       ignored: ["**/desktop/**"],
     },
+    proxy: knApiProxy,
+  },
+  preview: {
+    proxy: knApiProxy,
   },
 
   test: {

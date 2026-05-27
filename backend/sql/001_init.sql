@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS knowledge_bases (
   type TEXT NOT NULL DEFAULT 'llm_wiki' CHECK (type = 'llm_wiki'),
   name TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
+  embedding_model_id TEXT REFERENCES company_models(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL
 );
