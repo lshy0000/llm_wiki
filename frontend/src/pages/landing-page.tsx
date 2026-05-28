@@ -49,9 +49,6 @@ export function LandingPage({
                   <Database className="h-4 w-4" />
                   开始体验
                 </button>
-                <span className="inline-flex h-11 items-center border border-neutral-300 bg-white px-4 text-sm text-neutral-700">
-                  默认进入 /database 管理知识库
-                </span>
               </div>
             </div>
           </section>
