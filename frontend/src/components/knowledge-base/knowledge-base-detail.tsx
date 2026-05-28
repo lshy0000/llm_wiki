@@ -29,6 +29,7 @@ import {
   UserRound,
   Wrench,
   X,
+  type LucideIcon,
 } from "lucide-react"
 import { API_BASE, api, getAuthToken } from "@/web/api"
 import {
@@ -178,8 +179,8 @@ export function KnowledgeBaseDetail({
 
       <div className="grid min-h-0 flex-1 grid-cols-[42%_minmax(0,1fr)] gap-3 p-3">
         <div className="flex min-w-0 flex-col gap-3">
-          <section className="rounded-lg border border-neutral-200 bg-white p-4 shadow-sm">
-            <div className="flex items-start justify-between gap-4">
+          <section className="rounded-lg border border-neutral-200 bg-white p-3 shadow-sm">
+            <div className="flex items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
                 <div className="flex items-center justify-between gap-3">
                   <h2 className="text-base font-semibold">知识库概览</h2>
@@ -194,20 +195,20 @@ export function KnowledgeBaseDetail({
                     </button>
                   )}
                 </div>
-                <p className="mt-2 line-clamp-2 text-sm leading-6 text-neutral-600">{kb.description || "浏览器知识库详情"}</p>
+                <p className="mt-1 line-clamp-1 text-sm leading-5 text-neutral-600">{kb.description || "浏览器知识库详情"}</p>
               </div>
-              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-cyan-50 text-cyan-700">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-cyan-50 text-cyan-700">
                 <LibraryBig className="h-5 w-5" />
               </div>
             </div>
-            <div className="mt-4 grid grid-cols-3 gap-2">
+            <div className="mt-3 grid grid-cols-3 gap-2">
               <MiniInfo label="原始文件" value="raw/" />
               <MiniInfo label="Wiki 页面" value="wiki/" />
               {isAdmin && embeddingModels.length > 0 ? (
-                <div className="rounded-md border border-neutral-100 bg-neutral-50 p-2">
+                <div className="rounded-md border border-neutral-100 bg-neutral-50 px-2 py-1.5">
                   <div className="text-xs text-neutral-500">向量模型</div>
                   <select
-                    className="mt-1 h-8 w-full truncate rounded border border-neutral-200 bg-white px-2 text-sm font-medium outline-none focus:border-cyan-600 disabled:opacity-60"
+                    className="mt-1 h-7 w-full truncate rounded border border-neutral-200 bg-white px-2 text-sm font-medium outline-none focus:border-cyan-600 disabled:opacity-60"
                     value={selectedEmbeddingId}
                     disabled={embeddingBusy}
                     onChange={(event) => void saveEmbeddingModel(event.target.value)}
@@ -302,9 +303,9 @@ export function KnowledgeBaseDetail({
 
 function MiniInfo({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-neutral-100 bg-neutral-50 p-2">
+    <div className="rounded-md border border-neutral-100 bg-neutral-50 px-2 py-1.5">
       <div className="text-xs text-neutral-500">{label}</div>
-      <div className="mt-1 truncate text-sm font-medium">{value}</div>
+      <div className="mt-0.5 truncate text-sm font-medium">{value}</div>
     </div>
   )
 }
@@ -409,17 +410,24 @@ function SourcesPanel({ kbId }: { kbId: string }) {
     setUploading(true)
     setUploadProgress(0)
     setUploadError(null)
+    let uploadAccepted = false
     try {
       await api.uploadFilesWithProgress(kbId, acceptedItems, setUploadProgress)
+      uploadAccepted = true
+      setUploading(false)
       await load()
     } catch (err) {
-      setUploadError(err instanceof Error ? err.message : String(err))
+      if (uploadAccepted) setTaskLoadError(err instanceof Error ? err.message : String(err))
+      else setUploadError(err instanceof Error ? err.message : String(err))
     } finally {
       setUploading(false)
     }
   }
 
   const selectedTargetLabel = uploadTargetPath ? `raw/${uploadTargetPath}` : "raw/"
+  const sourceByStoragePath = useMemo(() => {
+    return new Map(sources.map((source) => [source.storageKey, source]))
+  }, [sources])
 
   const folderInputProps = {
     webkitdirectory: "",
@@ -454,14 +462,15 @@ function SourcesPanel({ kbId }: { kbId: string }) {
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border border-neutral-200 bg-white shadow-sm">
-      <section className="shrink-0 border-b border-neutral-100 p-3">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h2 className="text-base font-semibold">文件目录与摄取队列</h2>
-            <p className="mt-1 text-sm text-neutral-600">raw 保留用户上传结构，wiki 按 KN 规则生成可追溯页面。</p>
-            <div className="mt-2 flex items-center gap-2 text-xs text-neutral-600">
+      <section className="shrink-0 border-b border-neutral-100 px-3 py-2">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-3">
+              <h2 className="shrink-0 text-base font-semibold">文件目录与摄取队列</h2>
+              <p className="min-w-0 flex-1 truncate text-sm text-neutral-600">raw 保留上传结构，wiki 生成可追溯页面。</p>
+              <div className="flex shrink-0 items-center gap-2 text-xs text-neutral-600">
               <span>上传到</span>
-              <span className="rounded border border-cyan-100 bg-cyan-50 px-2 py-1 font-mono text-cyan-800">{selectedTargetLabel}</span>
+              <span className="max-w-40 truncate rounded border border-cyan-100 bg-cyan-50 px-2 py-1 font-mono text-cyan-800">{selectedTargetLabel}</span>
               {uploadTargetPath && (
                 <button
                   className="rounded border border-neutral-200 px-2 py-1 hover:bg-neutral-50"
@@ -472,11 +481,12 @@ function SourcesPanel({ kbId }: { kbId: string }) {
                   使用 raw 根目录
                 </button>
               )}
+              </div>
             </div>
             {uploadError && <p className="mt-2 text-xs text-red-700">{uploadError}</p>}
           </div>
           <div className="flex shrink-0 gap-2">
-            <label className={`inline-flex h-9 items-center gap-2 rounded-md border border-neutral-200 px-3 text-sm hover:bg-neutral-50 ${uploading ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}>
+            <label className={`inline-flex h-8 items-center gap-2 rounded-md border border-neutral-200 px-2.5 text-sm hover:bg-neutral-50 ${uploading ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}>
               <Upload className="h-4 w-4" />
               {uploading ? "上传中" : "上传文件"}
               <input
@@ -490,7 +500,7 @@ function SourcesPanel({ kbId }: { kbId: string }) {
                 }}
               />
             </label>
-            <label className={`inline-flex h-9 items-center gap-2 rounded-md border border-neutral-200 px-3 text-sm hover:bg-neutral-50 ${uploading ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}>
+            <label className={`inline-flex h-8 items-center gap-2 rounded-md border border-neutral-200 px-2.5 text-sm hover:bg-neutral-50 ${uploading ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}>
               <Folder className="h-4 w-4" />
               文件夹
               <input
@@ -505,7 +515,7 @@ function SourcesPanel({ kbId }: { kbId: string }) {
                 }}
               />
             </label>
-            <button className="inline-flex h-9 items-center gap-2 rounded-md border border-neutral-200 px-3 text-sm hover:bg-neutral-50 disabled:opacity-60" disabled={uploading} onClick={() => void load()}>
+            <button className="inline-flex h-8 items-center gap-2 rounded-md border border-neutral-200 px-2.5 text-sm hover:bg-neutral-50 disabled:opacity-60" disabled={uploading} onClick={() => void load()}>
               <RefreshCw className={`h-4 w-4 ${uploading ? "animate-spin" : ""}`} />
               刷新
             </button>
@@ -513,12 +523,13 @@ function SourcesPanel({ kbId }: { kbId: string }) {
         </div>
       </section>
 
-      <section className="grid min-h-0 flex-1 grid-cols-2 gap-3 p-3">
+      <section className="grid min-h-0 flex-1 grid-cols-2 gap-3 overflow-hidden p-3">
         <TreePanel
           title="raw 上传目录"
           nodes={rawTree}
           selectedFolderPath={uploadTargetPath}
           selectedPath={selectedFile?.path}
+          sourceByPath={sourceByStoragePath}
           onOpenFile={(node) => void openFile("raw", node)}
           onSelectFolder={(node) => setUploadTargetPath(storageFolderToClientPath(node.path, "raw"))}
         />
@@ -542,7 +553,7 @@ function SourcesPanel({ kbId }: { kbId: string }) {
         visible={uploading}
       />
 
-      <section className="max-h-44 shrink-0 overflow-auto border-t border-neutral-100 bg-white">
+      <section className="max-h-36 shrink-0 overflow-auto border-t border-neutral-100 bg-white">
         <div className="sticky top-0 z-10 border-b border-neutral-100 bg-white px-3 py-2">
           <h3 className="text-sm font-semibold">后台任务</h3>
         </div>
@@ -563,6 +574,7 @@ function TreePanel({
   nodes,
   selectedFolderPath,
   selectedPath,
+  sourceByPath,
   onOpenFile,
   onSelectFolder,
 }: {
@@ -570,15 +582,16 @@ function TreePanel({
   nodes: FileTreeNode[]
   selectedFolderPath?: string
   selectedPath?: string
+  sourceByPath?: Map<string, SourceDocument>
   onOpenFile: (node: FileTreeNode) => void
   onSelectFolder?: (node: FileTreeNode) => void
 }) {
   return (
-    <div className="min-h-0 overflow-auto rounded-md border border-neutral-200 bg-white">
-      <div className="sticky top-0 z-10 border-b border-neutral-100 bg-white px-3 py-2">
+    <div className="flex min-h-0 flex-col overflow-hidden rounded-md border border-neutral-200 bg-white">
+      <div className="shrink-0 border-b border-neutral-100 bg-white px-3 py-2">
         <h3 className="text-sm font-semibold">{title}</h3>
       </div>
-      <div className="p-3">
+      <div className="min-h-0 flex-1 overflow-auto p-3">
         {nodes.length === 0 ? (
           <p className="text-sm text-neutral-500">暂无文件</p>
         ) : (
@@ -589,6 +602,7 @@ function TreePanel({
               depth={0}
               selectedFolderPath={selectedFolderPath}
               selectedPath={selectedPath}
+              sourceByPath={sourceByPath}
               onOpenFile={onOpenFile}
               onSelectFolder={onSelectFolder}
             />
@@ -604,6 +618,7 @@ function TreeNodeView({
   depth,
   selectedFolderPath,
   selectedPath,
+  sourceByPath,
   onOpenFile,
   onSelectFolder,
 }: {
@@ -611,6 +626,7 @@ function TreeNodeView({
   depth: number
   selectedFolderPath?: string
   selectedPath?: string
+  sourceByPath?: Map<string, SourceDocument>
   onOpenFile: (node: FileTreeNode) => void
   onSelectFolder?: (node: FileTreeNode) => void
 }) {
@@ -618,6 +634,7 @@ function TreeNodeView({
   const [open, setOpen] = useState(false)
   const selectedFolder = node.isDirectory && selectedFolderPath !== undefined && selectedFolderPath === storageFolderToClientPath(node.path, "raw")
   const selected = selectedPath === node.path || selectedFolder
+  const source = node.isDirectory ? undefined : sourceByPath?.get(node.path)
   const toggle = () => {
     if (node.isDirectory) {
       onSelectFolder?.(node)
@@ -640,6 +657,7 @@ function TreeNodeView({
         )}
         {node.isDirectory ? <Folder className="h-4 w-4 shrink-0 text-amber-700" /> : <FileSearch className="h-4 w-4 shrink-0 text-neutral-500" />}
         <span className="truncate">{node.name}</span>
+        {source && <SourceStatusBadge source={source} />}
       </button>
       {open && node.children?.map((child) => (
         <TreeNodeView
@@ -648,12 +666,40 @@ function TreeNodeView({
           depth={depth + 1}
           selectedFolderPath={selectedFolderPath}
           selectedPath={selectedPath}
+          sourceByPath={sourceByPath}
           onOpenFile={onOpenFile}
           onSelectFolder={onSelectFolder}
         />
       ))}
     </div>
   )
+}
+
+function SourceStatusBadge({ source }: { source: SourceDocument }) {
+  return (
+    <span className={`ml-auto shrink-0 rounded border px-1.5 py-0.5 text-[11px] ${sourceStatusClass(source)}`}>
+      {sourceStatusLabel(source)}
+    </span>
+  )
+}
+
+function sourceStatusLabel(source: SourceDocument): string {
+  if (!source.ingestRequired) return "仅保存"
+  if (source.status === "ingested") return "已入库"
+  if (source.status === "queued") return "排队"
+  if (source.status === "parsing") return "入库中"
+  if (source.status === "failed") return "失败"
+  if (source.status === "cancelled") return "已取消"
+  return "未入库"
+}
+
+function sourceStatusClass(source: SourceDocument): string {
+  if (!source.ingestRequired) return "border-neutral-200 bg-neutral-100 text-neutral-600"
+  if (source.status === "ingested") return "border-emerald-200 bg-emerald-50 text-emerald-700"
+  if (source.status === "queued" || source.status === "parsing") return "border-cyan-200 bg-cyan-50 text-cyan-700"
+  if (source.status === "failed") return "border-red-200 bg-red-50 text-red-700"
+  if (source.status === "cancelled") return "border-neutral-200 bg-neutral-100 text-neutral-600"
+  return "border-amber-200 bg-amber-50 text-amber-800"
 }
 
 function UploadProgressModal({
@@ -912,6 +958,7 @@ type AgentUiMessage = {
   content: string
   citations?: ChatCitation[]
   trace?: AgentTraceStep[]
+  status?: "streaming" | "complete" | "failed"
 }
 
 function AgentChatPanel({ kbId }: { kbId: string }) {
@@ -994,26 +1041,64 @@ function AgentChatPanel({ kbId }: { kbId: string }) {
     const question = input.trim()
     if (!question || busy) return
     const userMessage: AgentUiMessage = { id: clientId("user"), role: "user", content: question }
-    setMessages((items) => [...items, userMessage])
+    const assistantId = clientId("assistant")
+    const assistantMessage: AgentUiMessage = {
+      id: assistantId,
+      role: "assistant",
+      content: "",
+      citations: [],
+      trace: [],
+      status: "streaming",
+    }
+    const updateAssistantMessage = (update: (message: AgentUiMessage) => AgentUiMessage) => {
+      setMessages((items) => items.map((item) => item.id === assistantId ? update(item) : item))
+    }
+    setMessages((items) => [...items, userMessage, assistantMessage])
     setInput("")
     setBusy(true)
     setError(null)
+    let completed = false
+    let streamError: string | null = null
     try {
-      const response = await api.chat(kbId, question, conversationId)
-      setConversationId(response.conversationId)
-      setMessages((items) => [
-        ...items,
-        {
-          id: clientId("assistant"),
-          role: "assistant",
-          content: response.answer,
-          citations: response.citations,
-          trace: response.trace,
-        },
-      ])
-      void refreshConversations()
+      await api.chatStream(kbId, question, conversationId, (event) => {
+        if (event.type === "conversation") {
+          setConversationId(event.conversationId)
+          return
+        }
+        if (event.type === "step") {
+          updateAssistantMessage((message) => ({
+            ...message,
+            trace: [...(message.trace ?? []), event.step],
+          }))
+          return
+        }
+        if (event.type === "final") {
+          completed = true
+          setConversationId(event.response.conversationId)
+          updateAssistantMessage((message) => ({
+            ...message,
+            content: event.response.answer,
+            citations: event.response.citations,
+            trace: event.response.trace.length > 0 ? event.response.trace : message.trace,
+            status: "complete",
+          }))
+          return
+        }
+        streamError = event.message
+        updateAssistantMessage((message) => ({
+          ...message,
+          status: "failed",
+        }))
+      })
+      if (completed) void refreshConversations()
     } catch (err) {
-      setError(errorMessage(err))
+      const message = streamError ?? errorMessage(err)
+      setError(message)
+      updateAssistantMessage((item) => ({
+        ...item,
+        content: item.content || `请求失败：${message}`,
+        status: "failed",
+      }))
     } finally {
       setBusy(false)
     }
@@ -1075,10 +1160,8 @@ function AgentChatPanel({ kbId }: { kbId: string }) {
                   <Bot className="h-4 w-4" />
                 </div>
               )}
-              <div className={`max-w-[78%] rounded-lg border px-4 py-3 ${message.role === "user" ? "border-cyan-200 bg-cyan-50" : "border-neutral-200 bg-white"}`}>
-                {message.role === "assistant" ? <MarkdownView content={message.content} /> : <p className="whitespace-pre-wrap text-sm leading-6 text-neutral-900">{message.content}</p>}
-                {message.citations && message.citations.length > 0 && <CitationList citations={message.citations} />}
-                {message.trace && message.trace.length > 0 && <TraceView trace={message.trace} />}
+              <div className={`max-w-[86%] rounded-lg border px-4 py-3 ${message.role === "user" ? "border-cyan-200 bg-cyan-50" : "border-neutral-200 bg-white"}`}>
+                {message.role === "assistant" ? <AgentAssistantMessage message={message} /> : <p className="whitespace-pre-wrap text-sm leading-6 text-neutral-900">{message.content}</p>}
               </div>
               {message.role === "user" && (
                 <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-neutral-100 text-neutral-700">
@@ -1087,12 +1170,6 @@ function AgentChatPanel({ kbId }: { kbId: string }) {
               )}
             </article>
           ))}
-          {busy && (
-            <div className="flex items-center gap-2 text-sm text-neutral-500">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              Agent 正在选择工具并生成回答
-            </div>
-          )}
           {error && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
         </div>
       </div>
@@ -1127,6 +1204,32 @@ function AgentChatPanel({ kbId }: { kbId: string }) {
   )
 }
 
+function AgentAssistantMessage({ message }: { message: AgentUiMessage }) {
+  const trace = message.trace ?? []
+  const isRunning = message.status === "streaming"
+  return (
+    <div className="space-y-3">
+      {trace.length > 0 && <AgentTimeline trace={trace} active={isRunning && !message.content} />}
+      {isRunning && !message.content && (
+        <div className="flex items-center gap-2 rounded-md border border-dashed border-cyan-200 bg-cyan-50/60 px-3 py-2 text-xs text-cyan-800">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          Agent 正在执行
+        </div>
+      )}
+      {message.content && (
+        <div className={`border-l-2 pl-3 ${message.status === "failed" ? "border-red-500" : "border-cyan-700"}`}>
+          <div className={`mb-2 flex items-center gap-1.5 text-xs font-semibold ${message.status === "failed" ? "text-red-700" : "text-cyan-800"}`}>
+            {message.status === "failed" ? <AlertCircle className="h-3.5 w-3.5" /> : <MessageSquare className="h-3.5 w-3.5" />}
+            回答
+          </div>
+          <MarkdownView content={message.content} />
+        </div>
+      )}
+      {message.citations && message.citations.length > 0 && <CitationList citations={message.citations} />}
+    </div>
+  )
+}
+
 function CitationList({ citations }: { citations: ChatCitation[] }) {
   return (
     <div className="mt-3 flex flex-wrap gap-2">
@@ -1139,26 +1242,136 @@ function CitationList({ citations }: { citations: ChatCitation[] }) {
   )
 }
 
-function TraceView({ trace }: { trace: AgentTraceStep[] }) {
+function AgentTimeline({ trace, active }: { trace: AgentTraceStep[]; active: boolean }) {
   return (
-    <details className="mt-3 rounded-md border border-neutral-200 bg-neutral-50">
-      <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-neutral-700">思考过程</summary>
-      <div className="space-y-2 border-t border-neutral-200 p-3">
-        {trace.map((step) => (
-          <div key={step.id} className="rounded border border-neutral-200 bg-white p-2">
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-xs font-semibold text-neutral-900">{step.title}</span>
-              <span className="text-[11px] text-neutral-500">{step.type}{step.latencyMs !== undefined ? ` · ${step.latencyMs}ms` : ""}</span>
+    <div className="space-y-2">
+      {trace.map((step, index) => (
+        <AgentTimelineStep
+          key={step.id}
+          step={step}
+          isLast={index === trace.length - 1}
+        />
+      ))}
+      {active && (
+        <div className="grid grid-cols-[24px_minmax(0,1fr)] gap-2">
+          <div className="flex justify-center">
+            <div className="mt-0.5 flex h-6 w-6 items-center justify-center rounded-full border border-cyan-200 bg-cyan-50 text-cyan-700">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
             </div>
-            <p className="mt-1 text-xs leading-5 text-neutral-600">{step.detail}</p>
-            {step.outputSummary !== undefined && (
-              <pre className="mt-2 max-h-32 overflow-auto rounded bg-neutral-950 p-2 text-[11px] leading-4 text-neutral-50">{JSON.stringify(step.outputSummary, null, 2)}</pre>
+          </div>
+          <div className="min-w-0 rounded-md border border-dashed border-cyan-200 bg-cyan-50/50 px-3 py-2 text-xs text-cyan-800">
+            等待下一步
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function AgentTimelineStep({ step, isLast }: { step: AgentTraceStep; isLast: boolean }) {
+  const meta = traceStepMeta(step)
+  const Icon = meta.icon
+  return (
+    <div className="grid grid-cols-[24px_minmax(0,1fr)] gap-2">
+      <div className="flex flex-col items-center">
+        <div className={`mt-0.5 flex h-6 w-6 items-center justify-center rounded-full border ${meta.dotClass}`}>
+          <Icon className="h-3.5 w-3.5" />
+        </div>
+        {!isLast && <div className="mt-1 h-full min-h-4 w-px bg-neutral-200" />}
+      </div>
+      <div className={`min-w-0 rounded-md border px-3 py-2 ${meta.cardClass}`}>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex min-w-0 items-center gap-1.5">
+            <span className={`shrink-0 text-[11px] font-semibold ${meta.labelClass}`}>{meta.label}</span>
+            <span className="min-w-0 truncate text-xs font-semibold text-neutral-950">{step.title}</span>
+          </div>
+          <div className="flex shrink-0 items-center gap-2 text-[11px] text-neutral-500">
+            {step.toolName && <span className="font-mono">{step.toolName}</span>}
+            {step.latencyMs !== undefined && (
+              <span className="inline-flex items-center gap-1">
+                <Clock className="h-3 w-3" />
+                {step.latencyMs}ms
+              </span>
             )}
           </div>
-        ))}
+        </div>
+        <p className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-neutral-700">{step.detail}</p>
+        <div className="mt-2 grid gap-2">
+          {step.input !== undefined && <JsonBlock label="输入" value={step.input} />}
+          {step.outputSummary !== undefined && <JsonBlock label={step.type === "error" ? "错误" : "结果"} value={step.outputSummary} />}
+        </div>
       </div>
-    </details>
+    </div>
   )
+}
+
+function JsonBlock({ label, value }: { label: string; value: unknown }) {
+  return (
+    <div className="min-w-0 rounded border border-neutral-200 bg-white">
+      <div className="border-b border-neutral-100 px-2 py-1 text-[11px] font-semibold text-neutral-500">{label}</div>
+      <pre className="max-h-44 overflow-auto p-2 text-[11px] leading-4 text-neutral-800">{formatJson(value)}</pre>
+    </div>
+  )
+}
+
+function traceStepMeta(step: AgentTraceStep): {
+  label: string
+  icon: LucideIcon
+  dotClass: string
+  cardClass: string
+  labelClass: string
+} {
+  if (step.type === "tool") {
+    return {
+      label: "工具",
+      icon: Wrench,
+      dotClass: "border-blue-200 bg-blue-50 text-blue-700",
+      cardClass: "border-blue-100 bg-blue-50/30",
+      labelClass: "text-blue-700",
+    }
+  }
+  if (step.type === "observation") {
+    return {
+      label: "观察",
+      icon: FileSearch,
+      dotClass: "border-amber-200 bg-amber-50 text-amber-700",
+      cardClass: "border-amber-100 bg-amber-50/30",
+      labelClass: "text-amber-700",
+    }
+  }
+  if (step.type === "answer") {
+    return {
+      label: "回答",
+      icon: CheckCircle2,
+      dotClass: "border-emerald-200 bg-emerald-50 text-emerald-700",
+      cardClass: "border-emerald-100 bg-emerald-50/30",
+      labelClass: "text-emerald-700",
+    }
+  }
+  if (step.type === "error") {
+    return {
+      label: "失败",
+      icon: AlertCircle,
+      dotClass: "border-red-200 bg-red-50 text-red-700",
+      cardClass: "border-red-100 bg-red-50/40",
+      labelClass: "text-red-700",
+    }
+  }
+  return {
+    label: "思考",
+    icon: Brain,
+    dotClass: "border-cyan-200 bg-cyan-50 text-cyan-700",
+    cardClass: "border-cyan-100 bg-cyan-50/30",
+    labelClass: "text-cyan-700",
+  }
+}
+
+function formatJson(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2)
+  } catch {
+    return String(value)
+  }
 }
 
 function clientId(prefix: string): string {
@@ -1316,13 +1529,17 @@ function GraphPanel({ kbId }: { kbId: string }) {
 
 function RecallPanel({ kbId }: { kbId: string }) {
   const [query, setQuery] = useState("")
+  const [submittedQuery, setSubmittedQuery] = useState("")
   const [results, setResults] = useState<SearchResult[]>([])
   const [mode, setMode] = useState<string>("keyword")
   const [lightbox, setLightbox] = useState<SearchResult["images"][number] | null>(null)
+  const hasSearched = submittedQuery.length > 0
 
   const runSearch = async () => {
-    if (!query.trim()) return
-    const response = await api.search(kbId, query)
+    const trimmedQuery = query.trim()
+    if (!trimmedQuery) return
+    setSubmittedQuery(trimmedQuery)
+    const response = await api.search(kbId, trimmedQuery)
     setMode(response.mode)
     setResults(response.results)
   }
@@ -1346,7 +1563,13 @@ function RecallPanel({ kbId }: { kbId: string }) {
         </div>
         <div className="px-4 pb-2 text-xs text-neutral-500">模式：{mode} · RRF 混合召回会合并关键词和向量语义结果</div>
         <div className="divide-y divide-neutral-200">
-          {results.length === 0 && <div className="p-4 text-sm text-neutral-500">输入关键词后测试召回。上传并完成摄取后，这里会展示 wiki 页面、源路径、分数和图片。</div>}
+          {results.length === 0 && (
+            <div className="p-4 text-sm text-neutral-500">
+              {hasSearched
+                ? `没有检索到与“${submittedQuery}”相关的结果。可以换个关键词，或确认文档已经完成摄取。`
+                : "输入关键词后测试召回。上传并完成摄取后，这里会展示 wiki 页面、源路径、分数和图片。"}
+            </div>
+          )}
           {results.map((result) => (
             <article key={result.pageId} className="p-4">
               <div className="flex items-start justify-between gap-3">
@@ -1630,7 +1853,7 @@ function defaultToolArgs(tool?: ToolDefinition): string {
   }
   if (tool?.name === "retrieve_kb") args.query = ""
   if (tool?.name === "read_kb_file") args.key = "wiki/index.md"
-  if (tool?.name === "raw_list_files") args.parent = ""
+  if (tool?.name === "raw_list_files") args.parent = "raw"
   if (tool?.name === "read_raw_source") args.path = "raw/example.txt"
   return JSON.stringify(args, null, 2)
 }

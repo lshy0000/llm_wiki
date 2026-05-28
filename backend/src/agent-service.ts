@@ -16,6 +16,18 @@ interface AgentAskInput {
   kb: KnowledgeBase
   question: string
   conversationId?: string
+  events?: AgentAskEvents
+}
+
+export interface AgentAskEvents {
+  onConversation?: (info: { conversationId: string; userMessageId: string; runId: string }) => void | Promise<void>
+  onStep?: (step: AgentTraceStep) => void | Promise<void>
+}
+
+interface AgentRunContext {
+  auth: AuthContext
+  kb: KnowledgeBase
+  events?: AgentAskEvents
 }
 
 interface RetrievalToolResult {
@@ -66,7 +78,7 @@ interface CustomToolEvidence {
   result: unknown
 }
 
-interface RawFileTreeEvidence {
+interface StorageFileTreeEvidence {
   parent: string
   deep: number
   result: unknown
@@ -100,7 +112,7 @@ export class AgentService {
       : undefined
     const conversationId = existingConversation?.id ?? id("conv")
     const trace: AgentTraceStep[] = []
-    const context = { auth: input.auth, kb: input.kb }
+    const context: AgentRunContext = { auth: input.auth, kb: input.kb, events: input.events }
     const now = nowIso()
     await this.repo.saveAgentConversation({
       id: conversationId,
@@ -133,16 +145,21 @@ export class AgentService {
       status: "running",
       startedAt: nowIso(),
     })
+    await Promise.resolve(input.events?.onConversation?.({
+      conversationId,
+      userMessageId: userMessage.id,
+      runId: run.id,
+    })).catch(() => undefined)
 
     try {
       await this.recordStep(run, trace, "plan", "Plan", this.routeSummary(question), {
         outputSummary: { agentType: "kb_dedicated", kbId: input.kb.id, kbName: input.kb.name },
-      })
+      }, input.events?.onStep)
 
       if (isGreeting(question)) {
         const answer = await this.answerGreeting(input.kb.companyId, question)
         const assistant = await this.storeAssistant(input.kb, conversationId, answer, [])
-        await this.recordStep(run, trace, "answer", "Direct answer", "Greeting detected; no knowledge-base tools were called.")
+        await this.recordStep(run, trace, "answer", "Direct answer", "Greeting detected; no knowledge-base tools were called.", {}, input.events?.onStep)
         run = await this.repo.saveAgentRun({ ...run, assistantMessageId: assistant.id, status: "completed", completedAt: nowIso(), error: undefined })
         return { conversationId, answer, citations: [], trace }
       }
@@ -157,38 +174,39 @@ export class AgentService {
       let retrieval = asRetrievalResult((await retrievalRun).result)
       const mindmap = asMindmapResult((await mindmapRun)?.result)
       const customToolResults = await this.runMatchedCustomToolsForRun(run, context, trace, question)
-      const rawFileTree = shouldListRawFiles(question)
-        ? await this.listRawFilesForRun(run, context, trace)
+      const storageFileTreeParent = storageFileTreeParentFor(question)
+      const storageFileTree = storageFileTreeParent
+        ? await this.listStorageFilesForRun(run, context, trace, storageFileTreeParent)
         : undefined
 
       if (isWeakRecall(retrieval, question)) {
         const embedding = await this.llm.embedForKnowledgeBase(input.kb.id, question)
         if (embedding) {
-          await this.recordStep(run, trace, "observation", "Weak recall retry", "First recall was weak; retrying with query embedding.")
+          await this.recordStep(run, trace, "observation", "Weak recall retry", "First recall was weak; retrying with query embedding.", {}, input.events?.onStep)
           retrieval = asRetrievalResult((await this.runToolForRun(run, context, trace, "retrieve_kb", {
             query: question,
             topK: DEEP_TOP_K,
             queryEmbedding: embedding,
           })).result)
         } else {
-          await this.recordStep(run, trace, "observation", "Weak recall", "First recall was weak and no embedding model was available; continuing with keyword and graph results.")
+          await this.recordStep(run, trace, "observation", "Weak recall", "First recall was weak and no embedding model was available; continuing with keyword and graph results.", {}, input.events?.onStep)
         }
       }
 
       const files = await this.readEvidenceFilesForRun(run, context, trace, retrieval, shouldReadEvidence(question, retrieval), shouldReadRawSource(question))
       const citations = citationsFrom(retrieval)
       const fallback = fallbackAnswer(question, retrieval, files)
-      const answer = await this.generateAnswer(input.kb, question, history, retrieval, mindmap, files, customToolResults, rawFileTree, fallback)
+      const answer = await this.generateAnswer(input.kb, question, history, retrieval, mindmap, files, customToolResults, storageFileTree, fallback)
 
       const assistant = await this.storeAssistant(input.kb, conversationId, answer, citations)
       await this.recordStep(run, trace, "answer", "Generated answer", `Generated from ${retrieval.results.length} recalled result(s) and ${files.length} page excerpt(s).`, {
         outputSummary: { citations: citations.length },
-      })
+      }, input.events?.onStep)
       run = await this.repo.saveAgentRun({ ...run, assistantMessageId: assistant.id, status: "completed", completedAt: nowIso(), error: undefined })
       return { conversationId, answer, citations, trace }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      await this.recordStep(run, trace, "error", "Agent failed", message).catch(() => undefined)
+      await this.recordStep(run, trace, "error", "Agent failed", message, {}, input.events?.onStep).catch(() => undefined)
       await this.repo.saveAgentRun({ ...run, status: "failed", completedAt: nowIso(), error: message })
       throw err
     }
@@ -217,7 +235,7 @@ export class AgentService {
     mindmap: MindmapToolResult | undefined,
     files: EvidenceFile[],
     customToolResults: CustomToolEvidence[],
-    rawFileTree: RawFileTreeEvidence | undefined,
+    storageFileTree: StorageFileTreeEvidence | undefined,
     fallback: string,
   ): Promise<string> {
     const messages: LlmMessage[] = [
@@ -240,7 +258,7 @@ export class AgentService {
       })),
       {
         role: "user",
-        content: renderAgentPrompt(kb, question, retrieval, mindmap, files, customToolResults, rawFileTree),
+        content: renderAgentPrompt(kb, question, retrieval, mindmap, files, customToolResults, storageFileTree),
       },
     ]
     return this.llm.completeForCompany(kb.companyId, messages, fallback, 1800)
@@ -248,7 +266,7 @@ export class AgentService {
 
   private async readEvidenceFilesForRun(
     run: AgentRun,
-    context: { auth: AuthContext; kb: KnowledgeBase },
+    context: AgentRunContext,
     trace: AgentTraceStep[],
     retrieval: RetrievalToolResult,
     detailed: boolean,
@@ -263,7 +281,7 @@ export class AgentService {
     const files: EvidenceFile[] = []
     for (const key of keys) {
       if (key.startsWith("raw/") && !rawSourceAllowed) {
-        await this.recordStep(run, trace, "observation", "Raw source not read", `Skipped ${key}; raw source is reserved for explicit original-text requests.`, { outputSummary: { key } })
+        await this.recordStep(run, trace, "observation", "Raw source not read", `Skipped ${key}; raw source is reserved for explicit original-text requests.`, { outputSummary: { key } }, context.events?.onStep)
         continue
       }
       const toolName = key.startsWith("raw/") ? "read_raw_source" : "read_kb_file"
@@ -271,7 +289,7 @@ export class AgentService {
         ? { path: key, offset: 0, maxChars: FILE_READ_BYTES }
         : { key, maxBytes: FILE_READ_BYTES }
       const response = await this.runToolForRun(run, context, trace, toolName, toolArgs).catch(async (err) => {
-        await this.recordStep(run, trace, "observation", "Read skipped", err instanceof Error ? err.message : String(err), { outputSummary: { key } })
+        await this.recordStep(run, trace, "observation", "Read skipped", err instanceof Error ? err.message : String(err), { outputSummary: { key } }, context.events?.onStep)
         return undefined
       })
       const file = asFileResult(response?.result)
@@ -280,24 +298,25 @@ export class AgentService {
     return files
   }
 
-  private async listRawFilesForRun(
+  private async listStorageFilesForRun(
     run: AgentRun,
-    context: { auth: AuthContext; kb: KnowledgeBase },
+    context: AgentRunContext,
     trace: AgentTraceStep[],
-  ): Promise<RawFileTreeEvidence | undefined> {
-    const args = { parent: "", deep: 3 }
+    parent: "raw" | "wiki",
+  ): Promise<StorageFileTreeEvidence | undefined> {
+    const args = { parent, deep: 3 }
     try {
       const response = await this.runToolForRun(run, context, trace, "raw_list_files", args)
       return { parent: args.parent, deep: args.deep, result: response.result }
     } catch (err) {
-      await this.recordStep(run, trace, "observation", "Raw file list skipped", err instanceof Error ? err.message : String(err))
+      await this.recordStep(run, trace, "observation", "Storage file list skipped", err instanceof Error ? err.message : String(err), {}, context.events?.onStep)
       return undefined
     }
   }
 
   private async runMatchedCustomToolsForRun(
     run: AgentRun,
-    context: { auth: AuthContext; kb: KnowledgeBase },
+    context: AgentRunContext,
     trace: AgentTraceStep[],
     question: string,
   ): Promise<CustomToolEvidence[]> {
@@ -313,7 +332,7 @@ export class AgentService {
       } catch (err) {
         await this.recordStep(run, trace, "observation", "Custom tool skipped", err instanceof Error ? err.message : String(err), {
           toolName: definition.name,
-        })
+        }, context.events?.onStep)
       }
     }
     return results
@@ -321,21 +340,32 @@ export class AgentService {
 
   private async runToolForRun(
     run: AgentRun,
-    context: { auth: AuthContext; kb: KnowledgeBase },
+    context: AgentRunContext,
     trace: AgentTraceStep[],
     toolName: string,
     args: Record<string, unknown>,
   ): Promise<{ result: unknown }> {
     const started = Date.now()
-    const response = await this.tools.run(toolName, context, args)
-    const latencyMs = Date.now() - started
-    await this.recordStep(run, trace, "tool", toolName, toolDetail(toolName, response.result), {
-      toolName,
-      latencyMs,
-      input: summarizeToolInput(args),
-      outputSummary: summarizeToolOutput(response.result),
-    })
-    return { result: response.result }
+    try {
+      const response = await this.tools.run(toolName, context, args)
+      const latencyMs = Date.now() - started
+      await this.recordStep(run, trace, "tool", toolName, toolDetail(toolName, response.result), {
+        toolName,
+        latencyMs,
+        input: summarizeToolInput(args),
+        outputSummary: summarizeToolOutput(response.result),
+      }, context.events?.onStep)
+      return { result: response.result }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      await this.recordStep(run, trace, "error", `${toolName} failed`, message, {
+        toolName,
+        latencyMs: Date.now() - started,
+        input: summarizeToolInput(args),
+        outputSummary: { ok: false, error: message },
+      }, context.events?.onStep)
+      throw err
+    }
   }
 
   private async recordStep(
@@ -345,6 +375,7 @@ export class AgentService {
     title: string,
     detail: string,
     extra: Partial<AgentTraceStep> = {},
+    onStep?: AgentAskEvents["onStep"],
   ): Promise<AgentTraceStep> {
     const item = step(type, title, detail, extra)
     trace.push(item)
@@ -356,6 +387,7 @@ export class AgentService {
       ordinal: trace.length - 1,
       createdAt: nowIso(),
     })
+    await Promise.resolve(onStep?.(item)).catch(() => undefined)
     return item
   }
 
@@ -386,7 +418,7 @@ function renderAgentPrompt(
   mindmap: MindmapToolResult | undefined,
   files: EvidenceFile[],
   customToolResults: CustomToolEvidence[],
-  rawFileTree: RawFileTreeEvidence | undefined,
+  storageFileTree: StorageFileTreeEvidence | undefined,
 ): string {
   return [
     `Dedicated knowledge base: ${kb.name}`,
@@ -406,10 +438,10 @@ function renderAgentPrompt(
       "Custom tool results:",
       ...customToolResults.map((item) => `Tool: ${item.toolName}\n${JSON.stringify(item.result, null, 2).slice(0, 4000)}`),
     ].join("\n\n") : "",
-    rawFileTree ? [
+    storageFileTree ? [
       "",
-      `Raw source file tree (parent=${rawFileTree.parent || "raw/"}, deep=${rawFileTree.deep}):`,
-      JSON.stringify(rawFileTree.result, null, 2).slice(0, 8000),
+      `Storage file tree (parent=${storageFileTree.parent}, deep=${storageFileTree.deep}):`,
+      JSON.stringify(storageFileTree.result, null, 2).slice(0, 8000),
     ].join("\n") : "",
     files.length ? ["", "Page excerpts:", ...files.map((file) => [
       `File: ${file.key}${file.total !== undefined ? ` (window ${file.offset ?? 0}-${file.end ?? file.content.length}/${file.total})` : ""}${file.truncated ? " (truncated)" : ""}`,
@@ -494,12 +526,16 @@ function shouldReadRawSource(question: string): boolean {
     /(\u539f\u6587|\u6e90\u6587\u4ef6|\u539f\u59cb|\u5f15\u7528|\u5168\u6587|\u6e90\u7801|\u4ee3\u7801)/.test(question)
 }
 
-function shouldListRawFiles(question: string): boolean {
+function storageFileTreeParentFor(question: string): "raw" | "wiki" | undefined {
+  const hasWikiSignal = /(wiki|generated pages?|generated files?)/i.test(question)
   const hasRawSignal = /(raw|source|original|uploaded)/i.test(question) ||
     /(\u6e90\u6587\u4ef6|\u539f\u59cb|\u4e0a\u4f20)/.test(question)
   const hasListSignal = /(list|tree|folder|directory|files?)/i.test(question) ||
     /(\u76ee\u5f55|\u7ed3\u6784|\u6587\u4ef6\u5939|\u6587\u4ef6\u5217\u8868|\u6709\u54ea\u4e9b|\u5217\u51fa)/.test(question)
-  return hasRawSignal && hasListSignal
+  if (!hasListSignal) return undefined
+  if (hasWikiSignal) return "wiki"
+  if (hasRawSignal) return "raw"
+  return undefined
 }
 
 function isWeakRecall(retrieval: RetrievalToolResult, question: string): boolean {

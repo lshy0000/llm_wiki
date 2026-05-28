@@ -253,17 +253,17 @@ export class ToolService {
     this.register({
       definition: {
         name: "raw_list_files",
-        displayName: "Raw list files",
-        description: "List raw source files under a parent directory in the selected knowledge base.",
+        displayName: "List storage files",
+        description: "List files under raw, wiki, or a subdirectory in the selected knowledge base.",
         category: "storage",
         scope: "knowledge_base",
         readOnly: true,
         source: "builtin",
         enabled: true,
         agentEnabled: true,
-        triggers: ["rawlistfile", "raw files", "source files", "uploaded files"],
+        triggers: ["rawlistfile", "raw files", "source files", "uploaded files", "wiki files", "storage files"],
         parameters: objectSchema({
-          parent: { type: "string", description: "Parent directory below raw/. Pass an empty string for raw/.", default: "" },
+          parent: { type: "string", description: "Parent directory. Use raw, raw/foo, wiki, or wiki/foo.", default: "raw" },
           deep: {
             type: "integer",
             description: "Recursive depth. 1 returns direct children only.",
@@ -279,18 +279,18 @@ export class ToolService {
     this.register({
       definition: {
         name: "read_raw_source",
-        displayName: "Read raw source",
-        description: "Read a text/code raw source file by character window. Use only when the original source text is explicitly needed.",
+        displayName: "Read storage source",
+        description: "Read a text/code file under raw or wiki by character window. Use raw for original source text and wiki for generated wiki text.",
         category: "storage",
         scope: "knowledge_base",
         readOnly: true,
         source: "builtin",
         enabled: true,
         agentEnabled: true,
-        triggers: ["raw source", "source text", "original text", "source code"],
+        triggers: ["raw source", "source text", "original text", "source code", "wiki source", "wiki file"],
         parameters: objectSchema(
           {
-            path: { type: "string", description: "Raw file path. Accepts raw/foo.md or foo.md." },
+            path: { type: "string", description: "Storage key, for example raw/foo.md or wiki/index.md." },
             offset: {
               type: "integer",
               description: "Character offset where the returned window starts.",
@@ -500,14 +500,14 @@ export class ToolService {
 
   private async rawListFiles(context: ToolExecutionContext, args: ToolArguments): Promise<unknown> {
     const kb = requireKb(context)
-    const parent = optionalString(args, "parent", "")
+    const parent = optionalString(args, "parent", "raw")
     const deep = optionalInteger(args, "deep", RAW_LIST_DEFAULT_DEPTH, 1, RAW_LIST_MAX_DEPTH)
-    const key = rawStorageKey(parent)
+    const key = storageTreeKey(parent)
     const tree = await this.deps.storage.listTree(kb.id, key, deep)
     const stats = countTree(tree)
     return {
       kb: kbSummary(kb),
-      root: "raw",
+      root: key.split("/")[0] ?? key,
       parent: key,
       deep,
       totalFiles: stats.files,
@@ -541,7 +541,7 @@ export class ToolService {
 
   private async readRawSource(context: ToolExecutionContext, args: ToolArguments): Promise<unknown> {
     const kb = requireKb(context)
-    const key = rawStorageKey(requiredString(args, "path"))
+    const key = storageTextKey(requiredString(args, "path"))
     const offset = optionalInteger(args, "offset", 0, 0, Number.MAX_SAFE_INTEGER)
     const maxChars = optionalInteger(args, "maxChars", RAW_SOURCE_DEFAULT_CHARS, 1, RAW_SOURCE_MAX_CHARS)
     let bytes: Buffer
@@ -551,16 +551,16 @@ export class ToolService {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") throw new ToolError("File not found", 404)
       throw err
     }
-    const relativePath = key.replace(/^raw\/?/, "")
+    const relativePath = key.replace(/^(raw|wiki)\//, "")
     const admission = classifySourceBytes(relativePath, bytes)
     if (!["text", "markdown", "code"].includes(admission.kind)) {
-      throw new ToolError("Only text/code raw source files can be read", 415)
+      throw new ToolError("Only text/code storage files can be read", 415)
     }
     let text: string
     try {
       text = new TextDecoder("utf-8", { fatal: true }).decode(bytes)
     } catch {
-      throw new ToolError("Raw source file is not valid UTF-8 text", 415)
+      throw new ToolError("Storage file is not valid UTF-8 text", 415)
     }
     const total = text.length
     const start = Math.min(offset, total)
@@ -571,12 +571,10 @@ export class ToolService {
       path: key,
       relativePath,
       kind: admission.kind,
-      bytes: bytes.length,
       total,
       unit: "characters",
       offset: start,
       end,
-      maxChars,
       hasMore: end < total,
       truncated: start > 0 || end < total,
       content: text.slice(start, end),
@@ -660,6 +658,23 @@ function rawStorageKey(path: string): string {
       ? cleanPath.slice("raw/".length)
       : cleanPath
   return safeStorageKey(relativePath ? `raw/${relativePath}` : "raw")
+}
+
+function storageTreeKey(parent: string): string {
+  const cleanPath = safeStorageKey(parent)
+  if (!cleanPath) return "raw"
+  if (cleanPath === "raw" || cleanPath.startsWith("raw/") || cleanPath === "wiki" || cleanPath.startsWith("wiki/")) {
+    return cleanPath
+  }
+  throw new ToolError("parent must be raw, raw/..., wiki, or wiki/...")
+}
+
+function storageTextKey(path: string): string {
+  const cleanPath = safeStorageKey(path)
+  if (!cleanPath) throw new ToolError("path is required")
+  if (cleanPath === "raw" || cleanPath === "wiki") throw new ToolError("path must point to a file under raw/... or wiki/...")
+  if (cleanPath.startsWith("raw/") || cleanPath.startsWith("wiki/")) return cleanPath
+  return rawStorageKey(cleanPath)
 }
 
 function countTree(nodes: FileTreeNode[]): { files: number; directories: number } {

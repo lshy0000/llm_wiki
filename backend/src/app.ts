@@ -6,7 +6,7 @@ import pino from "pino"
 import multipart from "@fastify/multipart"
 import Fastify from "fastify"
 import type { FastifyReply, FastifyRequest } from "fastify"
-import { AgentService } from "./agent-service.js"
+import { AgentService, type AgentChatResponse } from "./agent-service.js"
 import { AuthService, extractBearerToken } from "./auth-service.js"
 import { DocumentParser } from "./document-parser.js"
 import { buildGraphIndexSnapshot, createGraphIndexFromEnv, syncAllGraphIndexes, syncGraphIndexForKnowledgeBase, type GraphIndex } from "./graph-index-service.js"
@@ -33,7 +33,7 @@ import { SourceService, type SourceSaveResult } from "./source-service.js"
 import { LocalStorageProvider } from "./storage.js"
 import { ToolConfigService, type CustomHttpToolConfig } from "./tool-config-service.js"
 import { ToolError, ToolService } from "./tool-service.js"
-import type { AuthContext, CompanyModel, KnowledgeBase, ReviewStatus } from "./types.js"
+import type { AgentTraceStep, AuthContext, CompanyModel, KnowledgeBase, ReviewStatus } from "./types.js"
 import { id, normalizeStorageKey, nowIso, objectContentTypeForFile } from "./wiki-utils.js"
 
 export interface AppServices {
@@ -55,6 +55,12 @@ export interface AppServices {
   toolConfig: ToolConfigService
   agent: AgentService
 }
+
+type AgentChatStreamEvent =
+  | { type: "conversation"; conversationId: string; userMessageId: string; runId: string }
+  | { type: "step"; step: AgentTraceStep }
+  | { type: "final"; response: AgentChatResponse }
+  | { type: "error"; message: string }
 
 function createLogger(): pino.Logger {
   const backendRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
@@ -715,6 +721,55 @@ function registerRoutes(app: AppInstance, services: AppServices): void {
         trace: message.role === "assistant" ? stepsByAssistantMessage.get(message.id) ?? [] : undefined,
       })),
       runs,
+    }
+  })
+
+  app.post<{ Params: { kbId: string }; Body: { question?: string; conversationId?: string } }>("/api/kbs/:kbId/chat/stream", async (request, reply) => {
+    const auth = await requireAuth(request, reply, services)
+    const kb = auth ? await getCompanyKnowledgeBase(services, auth, request.params.kbId, reply) : undefined
+    if (!auth || !kb) return
+    if (!request.body.question?.trim()) return reply.code(400).send({ error: "question is required" })
+
+    reply.hijack()
+    reply.raw.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+      "x-accel-buffering": "no",
+    })
+
+    let closed = false
+    reply.raw.on("close", () => {
+      closed = true
+    })
+
+    const send = (event: AgentChatStreamEvent) => {
+      if (closed || reply.raw.destroyed || reply.raw.writableEnded) return
+      reply.raw.write(`data: ${JSON.stringify(event)}\n\n`)
+    }
+
+    reply.raw.write(": connected\n\n")
+    const heartbeat = setInterval(() => {
+      if (!closed && !reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.write(": ping\n\n")
+    }, 15_000)
+
+    try {
+      const response = await services.agent.ask({
+        auth,
+        kb,
+        question: request.body.question,
+        conversationId: request.body.conversationId,
+        events: {
+          onConversation: (info) => send({ type: "conversation", ...info }),
+          onStep: (step) => send({ type: "step", step }),
+        },
+      })
+      send({ type: "final", response })
+    } catch (err) {
+      send({ type: "error", message: err instanceof Error ? err.message : String(err) })
+    } finally {
+      clearInterval(heartbeat)
+      if (!closed && !reply.raw.destroyed && !reply.raw.writableEnded) reply.raw.end()
     }
   })
 

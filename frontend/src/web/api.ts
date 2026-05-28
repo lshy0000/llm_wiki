@@ -1,5 +1,6 @@
 import type {
   AuthPayload,
+  AgentChatStreamEvent,
   AgentConversation,
   AgentConversationDetail,
   BackgroundTask,
@@ -77,6 +78,53 @@ async function requestText(path: string, init?: RequestInit): Promise<string> {
     throw new Error(detail || `HTTP ${response.status}`)
   }
   return response.text()
+}
+
+async function requestEventStream<T>(path: string, init: RequestInit, onEvent: (event: T) => void): Promise<void> {
+  const token = getAuthToken()
+  const headers = new Headers(init.headers)
+  if (init.body != null && !(init.body instanceof FormData)) headers.set("content-type", "application/json")
+  if (token) headers.set("authorization", `Bearer ${token}`)
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers,
+  })
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "")
+    throw new Error(detail || `HTTP ${response.status}`)
+  }
+  if (!response.body) throw new Error("Streaming response body is empty")
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+
+  const dispatchFrame = (frame: string) => {
+    const data = frame
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n")
+    if (!data.trim()) return
+    onEvent(JSON.parse(data) as T)
+  }
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    buffer = buffer.replace(/\r\n/g, "\n")
+    let boundary = buffer.indexOf("\n\n")
+    while (boundary >= 0) {
+      const frame = buffer.slice(0, boundary)
+      buffer = buffer.slice(boundary + 2)
+      dispatchFrame(frame)
+      boundary = buffer.indexOf("\n\n")
+    }
+  }
+  buffer += decoder.decode()
+  buffer = buffer.replace(/\r\n/g, "\n")
+  if (buffer.trim()) dispatchFrame(buffer)
 }
 
 export const api = {
@@ -251,6 +299,25 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ question, conversationId }),
     }),
+  chatStream: (
+    kbId: string,
+    question: string,
+    conversationId: string | undefined,
+    onEvent: (event: AgentChatStreamEvent) => void,
+    signal?: AbortSignal,
+  ) =>
+    requestEventStream<AgentChatStreamEvent>(
+      `/api/kbs/${kbId}/chat/stream`,
+      {
+        method: "POST",
+        body: JSON.stringify({ question, conversationId }),
+        signal,
+      },
+      (event) => {
+        onEvent(event)
+        if (event.type === "error") throw new Error(event.message)
+      },
+    ),
   lint: (kbId: string) => request<ReviewItem[]>(`/api/kbs/${kbId}/lint`, { method: "POST" }),
   reviews: (kbId: string) => request<ReviewItem[]>(`/api/kbs/${kbId}/reviews`),
   updateReviewStatus: (kbId: string, reviewId: string, status: ReviewStatus) =>

@@ -366,6 +366,12 @@ export interface ChatResponse {
   trace: AgentTraceStep[]
 }
 
+export type AgentChatStreamEvent =
+  | { type: "conversation"; conversationId: string; userMessageId: string; runId: string }
+  | { type: "step"; step: AgentTraceStep }
+  | { type: "final"; response: ChatResponse }
+  | { type: "error"; message: string }
+
 export interface AgentConversation {
   id: string
   companyId: string
