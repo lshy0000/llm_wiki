@@ -54,6 +54,10 @@ type JsonRecord = Record<string, unknown>
 
 interface ChatResponse {
   choices?: Array<{ message?: { content?: string; reasoning?: string; reasoning_content?: string } }>
+  usage?: {
+    prompt_cache_hit_tokens?: number
+    prompt_cache_miss_tokens?: number
+  }
 }
 
 interface AnthropicResponse {
@@ -67,6 +71,10 @@ interface EmbeddingResponse {
 export interface ModelCompletion {
   content: string
   reasoning?: string
+  usage?: {
+    promptCacheHitTokens?: number
+    promptCacheMissTokens?: number
+  }
 }
 
 const MODEL_SAVE_VALIDATION_TIMEOUT_MS = 20_000
@@ -103,7 +111,7 @@ export const MODEL_PROVIDER_MANIFESTS: Record<ModelProvider, ModelProviderManife
     apiKeyRequired: true,
     suggestedModel: "deepseek-v4-flash",
     defaultCapabilities: ["llm"],
-    description: "DeepSeek 官方 API。v4 模型由后端注入 DeepSeek 专用 thinking 控制。",
+    description: "DeepSeek 官方 API。使用 /chat/completions，并上报上下文缓存命中。",
   },
   kimi: {
     provider: "kimi",
@@ -364,6 +372,7 @@ async function completeOpenAiCompatibleDetailed(
   return {
     content: contentParts.content || fallback,
     reasoning: joinReasoning(message?.reasoning_content, message?.reasoning, contentParts.reasoning),
+    usage: deepSeekUsage(json),
   }
 }
 
@@ -538,7 +547,7 @@ function openAiBody(model: RuntimeModelConfig, messages: ModelMessage[], maxToke
     model: model.model,
     messages: messages.map((message) => ({
       role: message.role,
-      content: openAiContent(message.content),
+      content: openAiContent(model, message.content),
     })),
   }
 
@@ -556,16 +565,29 @@ function openAiBody(model: RuntimeModelConfig, messages: ModelMessage[], maxToke
   return body
 }
 
-function openAiContent(content: ModelMessage["content"]): unknown {
+function openAiContent(model: Pick<RuntimeModelConfig, "provider">, content: ModelMessage["content"]): unknown {
   if (typeof content === "string") return content
   if (content.every((block) => block.type === "text")) {
     return content.map((block) => block.type === "text" ? block.text : "").join("")
+  }
+  if (model.provider === "deepseek") {
+    throw new Error("DeepSeek official API does not accept image input")
   }
   return content.map((block) =>
     block.type === "text"
       ? { type: "text", text: block.text }
       : { type: "image_url", image_url: { url: `data:${block.mediaType};base64,${block.dataBase64}` } },
   )
+}
+
+function deepSeekUsage(json: ChatResponse): ModelCompletion["usage"] {
+  const hit = json.usage?.prompt_cache_hit_tokens
+  const miss = json.usage?.prompt_cache_miss_tokens
+  if (typeof hit !== "number" && typeof miss !== "number") return undefined
+  return {
+    promptCacheHitTokens: hit ?? 0,
+    promptCacheMissTokens: miss ?? 0,
+  }
 }
 
 function anthropicContent(content: ModelMessage["content"]): unknown {

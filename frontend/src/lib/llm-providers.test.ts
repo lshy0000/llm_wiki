@@ -266,44 +266,85 @@ describe("Ollama / custom (chat_completions) — vision content", () => {
 })
 
 describe("reasoning controls", () => {
-  it("maps DeepSeek-compatible custom endpoints to thinking disabled for structured tasks", () => {
-    const cfg = mkConfig({
+  it("uses the official DeepSeek endpoint without the generic /v1 custom route", () => {
+    const cfg = getProviderConfig(mkConfig({
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+    }))
+
+    expect(cfg.url).toBe("https://api.deepseek.com/chat/completions")
+    expect(cfg.headers.Authorization).toBe("Bearer sk-test")
+    expect(cfg.headers.Origin).toBeUndefined()
+  })
+
+  it("routes legacy custom DeepSeek configs to the official endpoint", () => {
+    const cfg = getProviderConfig(mkConfig({
       provider: "custom",
-      model: "deepseek-chat",
+      model: "deepseek-v4-flash",
       customEndpoint: "https://api.deepseek.com/v1",
       apiMode: "chat_completions",
-    })
-    const body = getProviderConfig(cfg).buildBody(
+    }))
+    const body = cfg.buildBody(
       [{ role: "user", content: "hi" }],
       { reasoning: { mode: "off" } },
     ) as Record<string, unknown>
 
+    expect(cfg.url).toBe("https://api.deepseek.com/chat/completions")
+    expect(cfg.headers.Origin).toBeUndefined()
+    expect(body.stream_options).toEqual({ include_usage: true })
     expect(body.thinking).toEqual({ type: "disabled" })
+  })
+
+  it("maps DeepSeek official provider to thinking disabled for structured tasks", () => {
+    const cfg = mkConfig({
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+    })
+    const body = getProviderConfig(cfg).buildBody(
+      [{ role: "user", content: "hi" }],
+      { temperature: 0.1, reasoning: { mode: "off" } },
+    ) as Record<string, unknown>
+
+    expect(body.thinking).toEqual({ type: "disabled" })
+    expect(body.temperature).toBe(0.1)
+    expect(body.stream_options).toEqual({ include_usage: true })
     expect(body.reasoning).toBeUndefined()
   })
 
   it("maps DeepSeek high reasoning to thinking enabled plus reasoning_effort", () => {
     const cfg = mkConfig({
-      provider: "custom",
-      model: "deepseek-reasoner",
-      customEndpoint: "https://api.deepseek.com/v1",
-      apiMode: "chat_completions",
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
     })
     const body = getProviderConfig(cfg).buildBody(
       [{ role: "user", content: "hi" }],
-      { reasoning: { mode: "high" } },
+      { temperature: 0.1, top_p: 0.9, reasoning: { mode: "high" } },
     ) as Record<string, unknown>
 
     expect(body.thinking).toEqual({ type: "enabled" })
     expect(body.reasoning_effort).toBe("high")
+    expect(body.temperature).toBeUndefined()
+    expect(body.top_p).toBeUndefined()
+  })
+
+  it("maps DeepSeek max reasoning effort to official max", () => {
+    const cfg = mkConfig({
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+    })
+    const body = getProviderConfig(cfg).buildBody(
+      [{ role: "user", content: "hi" }],
+      { reasoning: { mode: "max" } },
+    ) as Record<string, unknown>
+
+    expect(body.thinking).toEqual({ type: "enabled" })
+    expect(body.reasoning_effort).toBe("max")
   })
 
   it("does not send an undocumented DeepSeek max_reasoning_tokens field", () => {
     const cfg = mkConfig({
-      provider: "custom",
-      model: "deepseek-reasoner",
-      customEndpoint: "https://api.deepseek.com/v1",
-      apiMode: "chat_completions",
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
     })
     const body = getProviderConfig(cfg).buildBody(
       [{ role: "user", content: "hi" }],
@@ -312,6 +353,14 @@ describe("reasoning controls", () => {
 
     expect(body.thinking).toEqual({ type: "enabled" })
     expect(body.max_reasoning_tokens).toBeUndefined()
+  })
+
+  it("rejects image input on the official DeepSeek API", () => {
+    const cfg = mkConfig({
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+    })
+    expect(() => getProviderConfig(cfg).buildBody([visionMessage()])).toThrow(/image input/)
   })
 
   it("maps Xiaomi MiMo reasoning off to thinking disabled and max_completion_tokens", () => {

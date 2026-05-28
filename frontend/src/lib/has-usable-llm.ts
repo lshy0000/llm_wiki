@@ -1,4 +1,5 @@
 import type { LlmConfig } from "@/stores/wiki-store"
+import { isDeepSeekOfficialConfig } from "@/lib/llm-providers"
 
 export type LlmProvider = LlmConfig["provider"]
 
@@ -8,15 +9,16 @@ export type LlmProvider = LlmConfig["provider"]
  *   - `custom` is an OpenAI-compatible local-or-LAN endpoint that
  *     may or may not require auth (LM Studio, llama.cpp, vLLM
  *     defaults are all unauthenticated; users who deploy behind a
- *     proxy can still set apiKey to add Bearer auth)
+ *     proxy can still set apiKey to add Bearer auth). Known hosted
+ *     official endpoints such as DeepSeek still require a key.
  *   - `claude-code` spawns the Claude Code CLI subprocess, which
  *     authenticates via the user's existing ~/.claude OAuth — no
  *     API key is needed (or accepted) at this layer.
  *   - `codex-cli` spawns the Codex CLI subprocess, which authenticates
  *     via the user's existing Codex/ChatGPT login.
  *
- * Hosted providers (openai, anthropic, google, azure, minimax) require a
- * key from the user.
+ * Hosted providers (openai, anthropic, google, azure, deepseek, minimax)
+ * require a key from the user.
  */
 export const PROVIDERS_WITHOUT_KEY: ReadonlySet<LlmProvider> = new Set<LlmProvider>([
   "ollama",
@@ -40,8 +42,11 @@ export const PROVIDERS_WITHOUT_KEY: ReadonlySet<LlmProvider> = new Set<LlmProvid
  * land in exactly one bucket and don't slip through.
  */
 export function hasUsableLlm(
-  cfg: Pick<LlmConfig, "provider" | "apiKey">,
+  cfg: Pick<LlmConfig, "provider" | "apiKey"> & Partial<Pick<LlmConfig, "customEndpoint">>,
 ): boolean {
+  if (cfg.provider === "custom" && isDeepSeekOfficialConfig(cfg)) {
+    return (cfg.apiKey ?? "").trim().length > 0
+  }
   if (PROVIDERS_WITHOUT_KEY.has(cfg.provider)) return true
   return (cfg.apiKey ?? "").trim().length > 0
 }

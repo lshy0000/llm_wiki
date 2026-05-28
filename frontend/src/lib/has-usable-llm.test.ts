@@ -16,6 +16,7 @@ const KNOWN_PROVIDERS_WITH_KEY: ReadonlySet<LlmProvider> = new Set([
   "anthropic",
   "google",
   "azure",
+  "deepseek",
   "minimax",
 ])
 
@@ -29,6 +30,15 @@ describe("hasUsableLlm", () => {
   it("returns true for custom with no API key", () => {
     expect(
       hasUsableLlm({ provider: "custom", apiKey: "" }),
+    ).toBe(true)
+  })
+
+  it("requires an API key for legacy custom DeepSeek official endpoints", () => {
+    expect(
+      hasUsableLlm({ provider: "custom", apiKey: "", customEndpoint: "https://api.deepseek.com/v1" }),
+    ).toBe(false)
+    expect(
+      hasUsableLlm({ provider: "custom", apiKey: "sk-deepseek", customEndpoint: "https://api.deepseek.com/v1" }),
     ).toBe(true)
   })
 
@@ -95,6 +105,7 @@ describe("hasUsableLlm", () => {
     expect(PROVIDERS_WITHOUT_KEY.has("anthropic")).toBe(false)
     expect(PROVIDERS_WITHOUT_KEY.has("google")).toBe(false)
     expect(PROVIDERS_WITHOUT_KEY.has("azure")).toBe(false)
+    expect(PROVIDERS_WITHOUT_KEY.has("deepseek")).toBe(false)
     expect(PROVIDERS_WITHOUT_KEY.has("minimax")).toBe(false)
   })
 
@@ -108,6 +119,7 @@ describe("hasUsableLlm", () => {
       "anthropic",
       "google",
       "azure",
+      "deepseek",
       "ollama",
       "custom",
       "minimax",

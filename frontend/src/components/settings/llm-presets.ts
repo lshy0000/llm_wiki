@@ -15,6 +15,7 @@ export type Provider =
   | "anthropic"
   | "google"
   | "azure"
+  | "deepseek"
   | "ollama"
   | "custom"
   | "minimax"
@@ -168,10 +169,9 @@ export const LLM_PRESETS: LlmPreset[] = [
     id: "deepseek",
     label: "DeepSeek",
     hint: "api.deepseek.com",
-    provider: "custom",
-    baseUrl: "https://api.deepseek.com/v1",
+    provider: "deepseek",
+    baseUrl: "https://api.deepseek.com",
     defaultModel: "deepseek-v4-flash",
-    apiMode: "chat_completions",
     // `deepseek-chat` and `deepseek-reasoner` remain selectable for
     // existing users, but DeepSeek has announced deprecation on
     // 2026-07-24. Keep chip values as exact model ids so clicking a
@@ -182,7 +182,7 @@ export const LLM_PRESETS: LlmPreset[] = [
       "deepseek-chat",
       "deepseek-reasoner",
     ],
-    suggestedContextSize: 64000,
+    suggestedContextSize: 1000000,
   },
   {
     id: "groq",

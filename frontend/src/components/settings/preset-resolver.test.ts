@@ -22,6 +22,10 @@ describe("resolveConfig", () => {
     const deepseek = LLM_PRESETS.find((preset) => preset.id === "deepseek")
 
     expect(deepseek?.defaultModel).toBe("deepseek-v4-flash")
+    expect(deepseek?.provider).toBe("deepseek")
+    expect(deepseek?.baseUrl).toBe("https://api.deepseek.com")
+    expect(deepseek?.apiMode).toBeUndefined()
+    expect(deepseek?.suggestedContextSize).toBe(1000000)
     expect(deepseek?.suggestedModels).toEqual([
       "deepseek-v4-flash",
       "deepseek-v4-pro",
@@ -53,14 +57,14 @@ describe("resolveConfig", () => {
     const preset: LlmPreset = {
       id: "deepseek",
       label: "DeepSeek",
-      provider: "custom",
-      baseUrl: "https://api.deepseek.com/v1",
+      provider: "deepseek",
+      baseUrl: "https://api.deepseek.com",
       defaultModel: "deepseek-chat",
-      apiMode: "chat_completions",
     }
 
     const resolved = resolveConfig(preset, undefined, fallbackConfig())
 
+    expect(resolved.provider).toBe("deepseek")
     expect(resolved.reasoning).toEqual({ mode: "auto" })
   })
 

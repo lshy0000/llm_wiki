@@ -78,6 +78,49 @@ describe("provider connection tests", () => {
     expect(result.message).toContain("Response: OK")
   })
 
+  it("reports DeepSeek cache usage when the stream includes usage stats", async () => {
+    const cfg: LlmConfig = {
+      ...llmConfig,
+      provider: "deepseek",
+      apiKey: "sk-deepseek",
+      model: "deepseek-v4-flash",
+    }
+    streamChatMock.mockImplementationOnce(async (_cfg, _messages, callbacks) => {
+      callbacks.onUsage?.({
+        prompt_cache_hit_tokens: 80,
+        prompt_cache_miss_tokens: 20,
+      })
+      callbacks.onToken("OK")
+      callbacks.onDone()
+    })
+
+    const result = await testLlmConnection(cfg)
+
+    expect(result.ok).toBe(true)
+    expect(result.message).toContain("Cache hit 80/100 prompt tokens (80%).")
+  })
+
+  it("reports cache usage for legacy custom DeepSeek official endpoints", async () => {
+    const cfg: LlmConfig = {
+      ...llmConfig,
+      apiKey: "sk-deepseek",
+      customEndpoint: "https://api.deepseek.com/v1",
+    }
+    streamChatMock.mockImplementationOnce(async (_cfg, _messages, callbacks) => {
+      callbacks.onUsage?.({
+        prompt_cache_hit_tokens: 40,
+        prompt_cache_miss_tokens: 60,
+      })
+      callbacks.onToken("OK")
+      callbacks.onDone()
+    })
+
+    const result = await testLlmConnection(cfg)
+
+    expect(result.ok).toBe(true)
+    expect(result.message).toContain("Cache hit 40/100 prompt tokens (40%).")
+  })
+
   it("validates LLM functional output token", async () => {
     streamChatMock.mockImplementationOnce(async (_cfg, _messages, callbacks) => {
       callbacks.onToken("LLM_WIKI_TEST_OK")

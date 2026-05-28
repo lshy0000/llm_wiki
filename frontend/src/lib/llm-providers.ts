@@ -65,6 +65,7 @@ interface ProviderConfig {
 }
 
 const JSON_CONTENT_TYPE = "application/json"
+const DEEPSEEK_OFFICIAL_CHAT_URL = "https://api.deepseek.com/chat/completions"
 
 /**
  * Origin header for local-LLM endpoints (Ollama, LM Studio, llama.cpp
@@ -216,13 +217,15 @@ function toOpenAiContent(content: string | ContentBlock[]): unknown {
 function buildOpenAiBody(
   messages: ChatMessage[],
   overrides?: RequestOverrides,
+  contentMapper: (content: string | ContentBlock[]) => unknown = toOpenAiContent,
 ): Record<string, unknown> {
-  // OpenAI (and every /v1/chat/completions clone — DeepSeek, Groq,
-  // Ollama, Zhipu, Kimi, xAI, MiniMax OpenAI-compat, ...) accepts these
+  // OpenAI-style chat wires (Groq, Ollama, Zhipu, Kimi, xAI,
+  // MiniMax OpenAI-compat, plus DeepSeek's official /chat/completions)
+  // accept these
   // knobs at the top level using the names clients already send.
   const translated = messages.map((m) => ({
     role: m.role,
-    content: toOpenAiContent(m.content),
+    content: contentMapper(m.content),
   }))
   return { messages: translated, stream: true, ...stripWireAgnosticOverrides(overrides) }
 }
@@ -236,8 +239,15 @@ function effectiveReasoning(config: LlmConfig, overrides?: RequestOverrides): Re
   return overrides?.reasoning ?? config.reasoning ?? { mode: "auto" }
 }
 
-function isDeepSeekEndpoint(config: LlmConfig): boolean {
-  return /deepseek/i.test(config.model) || /deepseek/i.test(config.customEndpoint)
+export function isDeepSeekOfficialConfig(config: Pick<LlmConfig, "provider"> & { customEndpoint?: string }): boolean {
+  if (config.provider === "deepseek") return true
+  const normalized = (config.customEndpoint ?? "")
+    .trim()
+    .replace(/\/+$/, "")
+    .replace(/\/v1\/chat\/completions$/i, "")
+    .replace(/\/chat\/completions$/i, "")
+    .replace(/\/v1$/i, "")
+  return /^https:\/\/api\.deepseek\.com$/i.test(normalized)
 }
 
 function isQwenThinkingModel(model: string): boolean {
@@ -253,6 +263,14 @@ function isKimiEndpoint(config: LlmConfig): boolean {
 function isXiaomiMimoEndpoint(config: LlmConfig): boolean {
   return /(^|[/:.-])mimo([/:.-]|$)/i.test(config.model)
     || /\.?xiaomimimo\.com(?::|\/|$)/i.test(config.customEndpoint)
+}
+
+function toDeepSeekOfficialContent(content: string | ContentBlock[]): unknown {
+  if (typeof content === "string") return content
+  if (content.every((b) => b.type === "text")) {
+    return content.map((b) => (b.type === "text" ? b.text : "")).join("")
+  }
+  throw new Error("DeepSeek official API does not accept image input. Use a vision-capable provider for image captioning.")
 }
 
 function isOpenAiStrictCompletionModel(config: LlmConfig): boolean {
@@ -325,32 +343,55 @@ function adaptXiaomiMimoBody(
   }
 }
 
+function adaptDeepSeekOfficialBody(
+  config: LlmConfig,
+  body: Record<string, unknown>,
+  reasoning: ReasoningConfig,
+): boolean {
+  if (!isDeepSeekOfficialConfig(config)) return false
+
+  body.stream_options = { include_usage: true }
+
+  if (reasoning.mode === "off") {
+    body.thinking = { type: "disabled" }
+    return true
+  }
+
+  // DeepSeek V4 thinking defaults to enabled. In thinking mode the
+  // official API documents only high/max effort; lower labels are mapped
+  // to high by the service, so make that mapping explicit and keep the
+  // wire free of unsupported sampling knobs.
+  delete body.temperature
+  delete body.top_p
+  delete body.top_k
+
+  if (reasoning.mode !== "auto") {
+    body.thinking = { type: "enabled" }
+    if (reasoning.mode === "max") {
+      body.reasoning_effort = "max"
+    } else if (reasoning.mode !== "custom") {
+      body.reasoning_effort = "high"
+    }
+  }
+
+  return true
+}
+
 function buildOpenAiCompatibleBody(
   config: LlmConfig,
   messages: ChatMessage[],
   overrides?: RequestOverrides,
 ): Record<string, unknown> {
   const reasoning = effectiveReasoning(config, overrides)
-  const body: Record<string, unknown> = buildOpenAiBody(messages, stripWireAgnosticOverrides(overrides))
+  const body: Record<string, unknown> = buildOpenAiBody(
+    messages,
+    stripWireAgnosticOverrides(overrides),
+    isDeepSeekOfficialConfig(config) ? toDeepSeekOfficialContent : toOpenAiContent,
+  )
   adaptOpenAiStrictCompletionBody(config, body)
   adaptKimiBody(config, body)
   adaptXiaomiMimoBody(config, body, reasoning)
-
-  if (isDeepSeekEndpoint(config)) {
-    // DeepSeek V4 thinking mode. `thinking.type=disabled` is the most
-    // important path for ingestion/rewrite tasks: it prevents the model
-    // from spending the whole response on `reasoning_content` with no
-    // final `content`.
-    if (reasoning.mode === "off") {
-      body.thinking = { type: "disabled" }
-    } else if (reasoning.mode !== "auto") {
-      body.thinking = { type: "enabled" }
-      if (reasoning.mode === "high" || reasoning.mode === "max") {
-        body.reasoning_effort = reasoning.mode
-      }
-    }
-    return body
-  }
+  if (adaptDeepSeekOfficialBody(config, body, reasoning)) return body
 
   if (reasoning.mode === "off" && isQwenThinkingModel(config.model)) {
     body.chat_template_kwargs = { enable_thinking: false }
@@ -664,6 +705,20 @@ export function getProviderConfig(config: LlmConfig): ProviderConfig {
       }
     }
 
+    case "deepseek":
+      return {
+        url: DEEPSEEK_OFFICIAL_CHAT_URL,
+        headers: {
+          "Content-Type": JSON_CONTENT_TYPE,
+          Authorization: `Bearer ${apiKey}`,
+        },
+        buildBody: (messages, overrides) => ({
+          ...buildOpenAiCompatibleBody(config, messages, overrides),
+          model,
+        }),
+        parseStream: parseOpenAiLine,
+      }
+
     case "azure": {
       return {
         url: buildAzureOpenAiUrl(
@@ -757,16 +812,22 @@ export function getProviderConfig(config: LlmConfig): ProviderConfig {
       // a pasted "/chat/completions" tail. Don't double-append in that
       // case, or we'd POST to ".../chat/completions/chat/completions".
       const base = customEndpoint.replace(/\/+$/, "")
-      const url = isAzureOpenAiEndpoint(base)
-        ? buildAzureOpenAiUrl(
-            base,
-            model,
-            config.azureApiVersion ?? AZURE_OPENAI_API_VERSION,
-          )
-        : /\/chat\/completions$/i.test(base)
-          ? base
-          : `${base}/chat/completions`
-      const azure = isAzureOpenAiEndpoint(url)
+      const deepSeekOfficial = isDeepSeekOfficialConfig(config)
+      let url: string
+      if (deepSeekOfficial) {
+        url = DEEPSEEK_OFFICIAL_CHAT_URL
+      } else if (isAzureOpenAiEndpoint(base)) {
+        url = buildAzureOpenAiUrl(
+          base,
+          model,
+          config.azureApiVersion ?? AZURE_OPENAI_API_VERSION,
+        )
+      } else if (/\/chat\/completions$/i.test(base)) {
+        url = base
+      } else {
+        url = `${base}/chat/completions`
+      }
+      const azure = !deepSeekOfficial && isAzureOpenAiEndpoint(url)
       return {
         url,
         headers: {
@@ -779,7 +840,7 @@ export function getProviderConfig(config: LlmConfig): ProviderConfig {
           // Local OpenAI-compatible servers (LM Studio, llama.cpp,
           // vLLM, LocalAI) often share Ollama's CORS sensitivity.
           // Same rationale as the `ollama` branch above.
-          ...(azure ? {} : localLlmOriginHeader()),
+          ...(azure || deepSeekOfficial ? {} : localLlmOriginHeader()),
         },
         buildBody: (messages, overrides) => {
           const body = buildOpenAiCompatibleBody(config, messages, overrides)

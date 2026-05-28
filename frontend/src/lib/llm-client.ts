@@ -10,8 +10,17 @@ export { isFetchNetworkError } from "./tauri-fetch"
 export interface StreamCallbacks {
   onToken: (token: string) => void
   onReasoningToken?: (token: string) => void
+  onUsage?: (usage: StreamUsage) => void
   onDone: () => void
   onError: (error: Error) => void
+}
+
+export interface StreamUsage {
+  prompt_tokens?: number
+  completion_tokens?: number
+  total_tokens?: number
+  prompt_cache_hit_tokens?: number
+  prompt_cache_miss_tokens?: number
 }
 
 // Lazy import keeps the Tauri event/invoke bindings out of bundles that
@@ -45,6 +54,30 @@ function parseLines(chunk: Uint8Array, buffer: string): [string[], string] {
   const lines = text.split("\n")
   const remaining = lines.pop() ?? ""
   return [lines, remaining]
+}
+
+function parseStreamUsage(line: string): StreamUsage | null {
+  if (!line.startsWith("data: ")) return null
+  const data = line.slice(6).trim()
+  if (data === "[DONE]") return null
+  try {
+    const parsed = JSON.parse(data) as { usage?: unknown }
+    if (!parsed.usage || typeof parsed.usage !== "object") return null
+    const raw = parsed.usage as Record<string, unknown>
+    const usage: StreamUsage = {}
+    for (const key of [
+      "prompt_tokens",
+      "completion_tokens",
+      "total_tokens",
+      "prompt_cache_hit_tokens",
+      "prompt_cache_miss_tokens",
+    ] as const) {
+      if (typeof raw[key] === "number") usage[key] = raw[key]
+    }
+    return Object.keys(usage).length > 0 ? usage : null
+  } catch {
+    return null
+  }
 }
 
 export async function streamChat(
@@ -203,6 +236,10 @@ export async function streamChat(
       callbacks.onReasoningToken?.(part)
     }
   }
+  const recordUsage = (line: string) => {
+    const usage = parseStreamUsage(line)
+    if (usage) callbacks.onUsage?.(usage)
+  }
 
   try {
     while (true) {
@@ -213,6 +250,7 @@ export async function streamChat(
           const trimmed = lineBuffer.trim()
           reasoningCharsObserved += countReasoningCharsInLine(trimmed)
           recordReasoning(trimmed)
+          recordUsage(trimmed)
           const token = providerConfig.parseStream(trimmed)
           if (token !== null) recordToken(token)
         }
@@ -227,6 +265,7 @@ export async function streamChat(
         if (!trimmed) continue
         reasoningCharsObserved += countReasoningCharsInLine(trimmed)
         recordReasoning(trimmed)
+        recordUsage(trimmed)
         const token = providerConfig.parseStream(trimmed)
         if (token !== null) recordToken(token)
       }

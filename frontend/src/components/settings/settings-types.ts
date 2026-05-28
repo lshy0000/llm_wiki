@@ -9,7 +9,7 @@ import type { AzureModelFamily, ReasoningConfig, SourceWatchConfig } from "@/sto
  */
 export interface SettingsDraft {
   // LLM provider
-  provider: "openai" | "anthropic" | "google" | "azure" | "ollama" | "custom" | "minimax" | "claude-code" | "codex-cli"
+  provider: "openai" | "anthropic" | "google" | "azure" | "deepseek" | "ollama" | "custom" | "minimax" | "claude-code" | "codex-cli"
   apiKey: string
   model: string
   ollamaUrl: string
@@ -35,7 +35,7 @@ export interface SettingsDraft {
   // Multimodal (image captioning at ingest time)
   multimodalEnabled: boolean
   multimodalUseMainLlm: boolean
-  multimodalProvider: "openai" | "anthropic" | "google" | "azure" | "ollama" | "custom" | "minimax" | "claude-code" | "codex-cli"
+  multimodalProvider: "openai" | "anthropic" | "google" | "azure" | "deepseek" | "ollama" | "custom" | "minimax" | "claude-code" | "codex-cli"
   multimodalApiKey: string
   multimodalModel: string
   multimodalOllamaUrl: string

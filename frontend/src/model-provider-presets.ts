@@ -36,7 +36,7 @@ export const MODEL_PROVIDER_PRESETS: ModelProviderPreset[] = [
     endpoint: "https://api.deepseek.com",
     suggestedModel: "deepseek-v4-flash",
     defaultCapabilities: ["llm"],
-    description: "DeepSeek 官方端点，后端对 v4 模型做专用 thinking 控制。",
+    description: "DeepSeek 官方端点，使用 /chat/completions，并上报上下文缓存命中。",
   },
   {
     provider: "kimi",

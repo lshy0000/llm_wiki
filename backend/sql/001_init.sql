@@ -128,6 +128,13 @@ CREATE TABLE IF NOT EXISTS sources (
   error TEXT
 );
 
+-- 旧库升级：CREATE TABLE IF NOT EXISTS 不会补列，索引创建前须先补齐
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS company_id TEXT REFERENCES companies(id) ON DELETE CASCADE;
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS root TEXT NOT NULL DEFAULT 'raw';
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS parent_path TEXT NOT NULL DEFAULT '';
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS upload_batch_id TEXT;
+ALTER TABLE sources ADD COLUMN IF NOT EXISTS ingest_required BOOLEAN NOT NULL DEFAULT TRUE;
+
 CREATE INDEX IF NOT EXISTS sources_kb_path_idx ON sources(kb_id, relative_path);
 CREATE INDEX IF NOT EXISTS sources_kb_ingest_status_idx ON sources(kb_id, root, ingest_required, status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS sources_kb_ingest_backlog_idx ON sources(kb_id, updated_at DESC)

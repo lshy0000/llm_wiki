@@ -1,6 +1,7 @@
 import type { EmbeddingConfig, LlmConfig } from "@/stores/wiki-store"
 import { fetchEmbedding, getLastEmbeddingError } from "@/lib/embedding"
-import { streamChat } from "@/lib/llm-client"
+import { streamChat, type StreamUsage } from "@/lib/llm-client"
+import { isDeepSeekOfficialConfig } from "@/lib/llm-providers"
 
 export interface ProviderTestResult {
   ok: boolean
@@ -64,6 +65,7 @@ export async function testLlmConnection(cfg: LlmConfig): Promise<ProviderTestRes
   const started = performance.now()
   let content = ""
   let errorMessage: string | null = null
+  let usage: StreamUsage | null = null
 
   await streamChat(
     cfg,
@@ -73,6 +75,7 @@ export async function testLlmConnection(cfg: LlmConfig): Promise<ProviderTestRes
     ],
     {
       onToken: (token) => { content += token },
+      onUsage: (u) => { usage = u },
       onDone: () => {},
       onError: (err) => { errorMessage = err.message },
     },
@@ -82,9 +85,10 @@ export async function testLlmConnection(cfg: LlmConfig): Promise<ProviderTestRes
 
   if (errorMessage) return { ok: false, message: errorMessage }
   if (!content.trim()) return { ok: false, message: "Model connected but returned empty content." }
+  const cacheInfo = formatDeepSeekCacheInfo(cfg, usage)
   return {
     ok: true,
-    message: `Connected in ${Math.round(performance.now() - started)} ms. Response: ${content.trim().slice(0, 80)}`,
+    message: `Connected in ${Math.round(performance.now() - started)} ms.${cacheInfo} Response: ${content.trim().slice(0, 80)}`,
   }
 }
 
@@ -119,4 +123,16 @@ export async function testLlmFunction(cfg: LlmConfig): Promise<ProviderTestResul
     }
   }
   return { ok: true, message: "Functional test passed. The model returned the expected token." }
+}
+
+function formatDeepSeekCacheInfo(cfg: LlmConfig, usage: StreamUsage | null): string {
+  if (!isDeepSeekOfficialConfig(cfg)) return ""
+  const hit = usage?.prompt_cache_hit_tokens
+  const miss = usage?.prompt_cache_miss_tokens
+  if (typeof hit !== "number" && typeof miss !== "number") return " Cache usage unavailable."
+  const hitTokens = hit ?? 0
+  const missTokens = miss ?? 0
+  const total = hitTokens + missTokens
+  const rate = total > 0 ? Math.round((hitTokens / total) * 100) : 0
+  return ` Cache hit ${hitTokens}/${total} prompt tokens (${rate}%).`
 }
