@@ -80,11 +80,22 @@ export interface SourceDocument {
   storageKey: string
   contentType: string
   status: string
+  ingestRequired: boolean
   folderContext: string
   size: number
   createdAt: string
   updatedAt: string
   error?: string
+}
+
+export interface SourceIngestSummary {
+  totalRequired: number
+  ingested: number
+  active: number
+  ready: number
+  failed: number
+  cancelled: number
+  missing: number
 }
 
 export interface SourceAdmission {
@@ -116,6 +127,11 @@ export interface SourceUploadSkipped {
 export interface SourceUploadResponse {
   created: SourceUploadAccepted[]
   skipped: SourceUploadSkipped[]
+  task?: BackgroundTask
+}
+
+export interface SourceIngestMissingResponse {
+  summary: SourceIngestSummary
   task?: BackgroundTask
 }
 

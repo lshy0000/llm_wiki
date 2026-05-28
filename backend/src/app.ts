@@ -522,7 +522,11 @@ function registerRoutes(app: AppInstance, services: AppServices): void {
       title: uploadTaskTitle(created),
       items: created,
     })
-    if (task.jobs.length > 0) await services.ingest.processQueue()
+    if (task.jobs.length > 0) {
+      void services.ingest.processQueue().catch((err) => {
+        app.log.error({ err }, "Failed to start source ingest queue after upload")
+      })
+    }
     return { created, skipped, task }
   })
 
@@ -531,6 +535,25 @@ function registerRoutes(app: AppInstance, services: AppServices): void {
     if (!auth || !(await getCompanyKnowledgeBase(services, auth, request.params.kbId, reply))) return
     return services.source.listSources(request.params.kbId)
   })
+
+  app.get<{ Params: { kbId: string } }>("/api/kbs/:kbId/sources/ingest-summary", async (request, reply) => {
+    const auth = await requireAuth(request, reply, services)
+    if (!auth || !(await getCompanyKnowledgeBase(services, auth, request.params.kbId, reply))) return
+    return services.source.ingestSummary(request.params.kbId)
+  })
+
+  app.post<{ Params: { kbId: string } }>("/api/kbs/:kbId/sources/ingest-missing", async (request, reply) => {
+    const auth = await requireAuth(request, reply, services)
+    if (!auth || !(await getCompanyKnowledgeBase(services, auth, request.params.kbId, reply))) return
+    const result = await services.source.createMissingIngestTask(request.params.kbId)
+    if (result.task && result.task.jobs.length > 0) {
+      void services.ingest.processQueue().catch((err) => {
+        app.log.error({ err }, "Failed to start source ingest queue for missing sources")
+      })
+    }
+    return result
+  })
+
   app.post<{ Params: { kbId: string } }>("/api/kbs/:kbId/sources/rescan", async (request, reply) => {
     const auth = await requireAuth(request, reply, services)
     if (!auth || !(await getCompanyKnowledgeBase(services, auth, request.params.kbId, reply))) return

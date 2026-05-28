@@ -1,4 +1,4 @@
-import type { BackgroundTask, IngestJob, SourceDocument } from "./types.js"
+import type { BackgroundTask, IngestJob, SourceDocument, SourceIngestSummary } from "./types.js"
 import type { KnowledgeRepository } from "./repository.js"
 import type { StorageProvider } from "./storage.js"
 import { classifySourceBytes, isAutoIngestAdmission, sourceContentType, type SourceAdmission } from "./source-formats.js"
@@ -55,6 +55,7 @@ export class SourceService {
       size: input.bytes.length,
       sha256: sha256(input.bytes),
       status: shouldQueue ? "uploaded" : "ingested",
+      ingestRequired: shouldQueue,
       folderContext: folderContextFor(relativePath, { root: "raw", uploadBatchId: input.uploadBatchId }),
       createdAt: now,
       updatedAt: now,
@@ -163,6 +164,7 @@ export class SourceService {
       size: input.bytes.length,
       sha256: sha256(input.bytes),
       status: shouldQueue ? "uploaded" : "ingested",
+      ingestRequired: shouldQueue,
       folderContext: folderContextFor(relativePath, { root: "raw" }),
       createdAt: now,
       updatedAt: now,
@@ -180,5 +182,41 @@ export class SourceService {
 
   async listSources(kbId: string): Promise<SourceDocument[]> {
     return this.repo.listSources(kbId)
+  }
+
+  async ingestSummary(kbId: string): Promise<SourceIngestSummary> {
+    return this.repo.sourceIngestSummary(kbId)
+  }
+
+  async createMissingIngestTask(kbId: string): Promise<{ summary: SourceIngestSummary; task?: BackgroundTask }> {
+    const sources = await this.repo.listSourcesNeedingIngest(kbId)
+    const items: Array<Extract<SourceSaveResult, { accepted: true }>> = []
+    for (const source of sources) {
+      let bytes: Buffer
+      try {
+        bytes = await this.storage.readObject(kbId, source.storageKey)
+      } catch (err) {
+        await this.repo.saveSource({
+          ...source,
+          status: "failed",
+          error: err instanceof Error ? err.message : String(err),
+          updatedAt: nowIso(),
+        })
+        continue
+      }
+      const admission = classifySourceBytes(source.relativePath, bytes)
+      if (!isAutoIngestAdmission(admission)) {
+        await this.repo.saveSource({ ...source, ingestRequired: false, status: "ingested", error: undefined, updatedAt: nowIso() })
+        continue
+      }
+      items.push({ accepted: true, source: { ...source, ingestRequired: true }, admission })
+    }
+    if (items.length === 0) return { summary: await this.ingestSummary(kbId) }
+    const task = await this.createIngestTask({
+      kbId,
+      title: `Ingest missing sources: ${items.length} file${items.length === 1 ? "" : "s"}`,
+      items,
+    })
+    return { summary: await this.ingestSummary(kbId), task }
   }
 }

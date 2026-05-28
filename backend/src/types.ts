@@ -1,5 +1,5 @@
 export type JobStatus = "queued" | "running" | "completed" | "failed" | "cancelled"
-export type SourceStatus = "uploaded" | "parsing" | "queued" | "ingested" | "failed"
+export type SourceStatus = "uploaded" | "parsing" | "queued" | "ingested" | "failed" | "cancelled"
 export type BackgroundTaskKind = "source_ingest"
 export type ReviewStatus = "open" | "resolved" | "dismissed"
 export type CompanyMemberRole = "platform_admin" | "org_admin" | "agent_admin" | "member"
@@ -112,10 +112,21 @@ export interface SourceDocument {
   size: number
   sha256: string
   status: SourceStatus
+  ingestRequired: boolean
   folderContext: string
   createdAt: string
   updatedAt: string
   error?: string
+}
+
+export interface SourceIngestSummary {
+  totalRequired: number
+  ingested: number
+  active: number
+  ready: number
+  failed: number
+  cancelled: number
+  missing: number
 }
 
 export interface IngestJob {

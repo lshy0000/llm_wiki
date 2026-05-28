@@ -4,9 +4,13 @@ import type { SourceService } from "./source-service.js"
 import type { StorageProvider } from "./storage.js"
 import { classifySourcePath } from "./source-formats.js"
 
+const LARGE_CORPUS_SOURCE_THRESHOLD = Number(process.env.KN_INCREMENTAL_INGEST_SOURCE_THRESHOLD ?? 150)
+const LARGE_CORPUS_AUTO_SCAN_INTERVAL_MS = Number(process.env.KN_LARGE_CORPUS_AUTO_SCAN_INTERVAL_MS ?? 10 * 60 * 1000)
+
 export class SourceWatchService {
   private timer: NodeJS.Timeout | undefined
   private scanning = false
+  private lastLargeCorpusAutoScanAt = new Map<string, number>()
 
   constructor(
     private readonly repo: KnowledgeRepository,
@@ -39,10 +43,16 @@ export class SourceWatchService {
   }
 
   async scanKnowledgeBase(kbId: string): Promise<void> {
-    await this.scanKb(kbId)
+    await this.scanKb(kbId, { force: true })
   }
 
-  private async scanKb(kbId: string): Promise<void> {
+  private async scanKb(kbId: string, options: { force?: boolean } = {}): Promise<void> {
+    const sourceCount = await this.repo.countSources(kbId)
+    if (!options.force && sourceCount > LARGE_CORPUS_SOURCE_THRESHOLD) {
+      const lastScanAt = this.lastLargeCorpusAutoScanAt.get(kbId) ?? 0
+      if (Date.now() - lastScanAt < LARGE_CORPUS_AUTO_SCAN_INTERVAL_MS) return
+      this.lastLargeCorpusAutoScanAt.set(kbId, Date.now())
+    }
     const known = new Set((await this.repo.listSources(kbId)).map((source) => source.storageKey))
     const files = this.flatten(await this.storage.listTree(kbId, "raw"))
     let queued = false

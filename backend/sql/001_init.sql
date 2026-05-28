@@ -120,7 +120,8 @@ CREATE TABLE IF NOT EXISTS sources (
   content_type TEXT NOT NULL,
   size BIGINT NOT NULL,
   sha256 TEXT NOT NULL,
-  status TEXT NOT NULL,
+  status TEXT NOT NULL CONSTRAINT sources_status_check CHECK (status IN ('uploaded', 'queued', 'parsing', 'ingested', 'failed', 'cancelled')),
+  ingest_required BOOLEAN NOT NULL DEFAULT TRUE,
   folder_context TEXT NOT NULL DEFAULT '',
   created_at TIMESTAMPTZ NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL,
@@ -128,6 +129,9 @@ CREATE TABLE IF NOT EXISTS sources (
 );
 
 CREATE INDEX IF NOT EXISTS sources_kb_path_idx ON sources(kb_id, relative_path);
+CREATE INDEX IF NOT EXISTS sources_kb_ingest_status_idx ON sources(kb_id, root, ingest_required, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS sources_kb_ingest_backlog_idx ON sources(kb_id, updated_at DESC)
+  WHERE root = 'raw' AND ingest_required AND status IN ('uploaded', 'failed', 'cancelled');
 CREATE UNIQUE INDEX IF NOT EXISTS sources_scope_path_uidx ON sources(company_id, kb_id, root, relative_path);
 
 CREATE TABLE IF NOT EXISTS ingest_tasks (
@@ -137,8 +141,8 @@ CREATE TABLE IF NOT EXISTS ingest_tasks (
   kind TEXT NOT NULL CHECK (kind IN ('source_ingest')),
   title TEXT NOT NULL,
   upload_batch_id TEXT,
-  status TEXT NOT NULL,
-  progress INTEGER NOT NULL,
+  status TEXT NOT NULL CONSTRAINT ingest_tasks_status_check CHECK (status IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
+  progress INTEGER NOT NULL CONSTRAINT ingest_tasks_progress_check CHECK (progress >= 0 AND progress <= 100),
   stage TEXT NOT NULL,
   source_ids TEXT[] NOT NULL DEFAULT '{}',
   job_ids TEXT[] NOT NULL DEFAULT '{}',
@@ -159,8 +163,8 @@ CREATE TABLE IF NOT EXISTS ingest_jobs (
   kb_id TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
   task_id TEXT REFERENCES ingest_tasks(id) ON DELETE SET NULL,
   source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
-  status TEXT NOT NULL,
-  progress INTEGER NOT NULL,
+  status TEXT NOT NULL CONSTRAINT ingest_jobs_status_check CHECK (status IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
+  progress INTEGER NOT NULL CONSTRAINT ingest_jobs_progress_check CHECK (progress >= 0 AND progress <= 100),
   stage TEXT NOT NULL,
   attempts INTEGER NOT NULL,
   cached BOOLEAN NOT NULL DEFAULT FALSE,
@@ -229,6 +233,7 @@ CREATE TABLE IF NOT EXISTS page_chunks (
 );
 
 CREATE INDEX IF NOT EXISTS page_chunks_kb_page_idx ON page_chunks(kb_id, page_id);
+CREATE INDEX IF NOT EXISTS page_chunks_tokens_gin_idx ON page_chunks USING GIN(tokens);
 
 CREATE TABLE IF NOT EXISTS image_assets (
   id TEXT PRIMARY KEY,

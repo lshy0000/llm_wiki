@@ -1,4 +1,4 @@
-import type { EvidenceBlock, ImageAsset, IngestJob, PageChunk, ParsedDocument, ReviewItem, WikiPage } from "./types.js"
+import type { EvidenceBlock, ImageAsset, IngestJob, PageChunk, ParsedDocument, ReviewItem, SourceDocument, WikiPage } from "./types.js"
 import { DocumentParser } from "./document-parser.js"
 import { makeEvidenceBlock, renderEvidenceMarkdown } from "./evidence.js"
 import { syncGraphIndexForKnowledgeBase, type GraphIndex } from "./graph-index-service.js"
@@ -20,6 +20,15 @@ import {
   sha256,
   tokenize,
 } from "./wiki-utils.js"
+
+const LARGE_CORPUS_SOURCE_THRESHOLD = Number(process.env.KN_INCREMENTAL_INGEST_SOURCE_THRESHOLD ?? 150)
+const LARGE_CORPUS_RELATED_PAGE_LIMIT = Number(process.env.KN_INCREMENTAL_INGEST_RELATED_PAGE_LIMIT ?? 50)
+
+interface IngestContextScope {
+  mode: "full" | "incremental"
+  sourceCount: number
+  contextPages: WikiPage[]
+}
 
 export class IngestService {
   private running = false
@@ -94,6 +103,10 @@ export class IngestService {
     this.cancelled.add(jobId)
     const cancelled = { ...job, status: "cancelled" as const, stage: "Cancelled", cancelledAt: nowIso(), updatedAt: nowIso() }
     await this.repo.saveJob(cancelled)
+    const source = await this.repo.getSource(job.sourceId)
+    if (source && source.status !== "ingested") {
+      await this.repo.saveSource({ ...source, status: "cancelled", updatedAt: nowIso(), error: undefined })
+    }
     if (job.taskId) await this.repo.refreshTask(job.taskId)
     return cancelled
   }
@@ -133,9 +146,11 @@ export class IngestService {
       const source = await this.repo.getSource(job.sourceId)
       if (!source) throw new Error("Source document not found")
       await update({ progress: 8, stage: "Parsing source document" })
+      await this.repo.saveSource({ ...source, status: "parsing", updatedAt: nowIso(), error: undefined })
 
       const cached = await this.repo.getIngestCache(job.kbId, source.id)
       if (cached?.sourceHash === source.sha256) {
+        await this.repo.saveSource({ ...source, status: "ingested", updatedAt: nowIso(), error: undefined })
         await update({
           status: "completed",
           progress: 100,
@@ -149,7 +164,6 @@ export class IngestService {
 
       const sourceBytes = await this.storage.readObject(job.kbId, source.storageKey)
       const parsed = await this.parser.parse(source.fileName, sourceBytes)
-      await this.repo.saveSource({ ...source, status: "parsing", updatedAt: nowIso() })
 
       await update({ progress: 20, stage: "Captioning multimodal images" })
       const imageAssets: ImageAsset[] = []
@@ -200,6 +214,20 @@ export class IngestService {
         evidenceMarkdown,
       ].filter(Boolean).join("\n\n")
 
+      await update({ progress: 30, stage: "Selecting ingest context" })
+      const ingestScope = await this.resolveIngestContextScope(job.kbId, source, fallbackSourceText)
+      const existingPages = ingestScope.contextPages
+      const pageCatalog = this.renderPageCatalog(existingPages)
+      const pageCatalogLabel = ingestScope.mode === "incremental"
+        ? `Related wiki page catalog (${existingPages.length} pages selected from ${ingestScope.sourceCount} sources; not exhaustive)`
+        : "Existing wiki page catalog"
+      const comparisonContext = [
+        pageCatalog ? `${pageCatalogLabel}:\n${pageCatalog}` : "",
+        ingestScope.mode === "incremental"
+          ? "Large-corpus incremental mode: compare the source only against the related catalog above. Do not infer that missing pages do not exist elsewhere in the wiki."
+          : "",
+      ].filter(Boolean).join("\n\n")
+
       await update({ progress: 36, stage: "Step 1: LLM analysis" })
       this.ensureNotCancelled(job.id)
       const analysis = await this.llm.completeForCompany(
@@ -210,15 +238,13 @@ export class IngestService {
             content:
               "You are the analysis stage of an llm_wiki ingest pipeline. Use the provided Evidence blocks, their IDs, source paths, and locators to identify source claims, entities, concepts, contradictions, and likely wiki page updates. Do not write final pages yet.",
           },
-          { role: "user", content: sourceContext.slice(0, 40_000) },
+          { role: "user", content: [comparisonContext, sourceContext].filter(Boolean).join("\n\n---\n\n").slice(0, 40_000) },
         ],
         this.fallbackAnalysis(source.relativePath, fallbackSourceText, imageAssets),
       )
 
       await update({ progress: 58, stage: "Step 2: wiki page generation", analysis })
       this.ensureNotCancelled(job.id)
-      const existingPages = await this.repo.listPages(job.kbId)
-      const pageCatalog = this.renderPageCatalog(existingPages)
       const generation = await this.llm.completeForCompany(
         source.companyId,
         [
@@ -230,7 +256,10 @@ export class IngestService {
           {
             role: "user",
             content: [
-              pageCatalog ? `Existing wiki page catalog:\n${pageCatalog}` : "",
+              pageCatalog ? `${pageCatalogLabel}:\n${pageCatalog}` : "",
+              ingestScope.mode === "incremental"
+                ? "Large-corpus incremental mode: compare the source only against the related catalog above. Do not infer that missing pages do not exist elsewhere in the wiki."
+                : "",
               `Analysis:\n${analysis}`,
               `Source context:\n${sourceContext.slice(0, 30_000)}`,
             ].filter(Boolean).join("\n\n---\n\n"),
@@ -250,6 +279,7 @@ export class IngestService {
 
       const pageById = new Map(existingPages.map((page) => [page.id, page]))
       const writtenPageIds: string[] = []
+      const writtenPages: WikiPage[] = []
       for (const block of fileBlocks) {
         this.ensureNotCancelled(job.id)
         let content = block.content
@@ -260,15 +290,16 @@ export class IngestService {
         await this.storage.writeObject(job.kbId, pagePath, content)
         const page = this.buildPage(job.kbId, pagePath, content, source.id, imageAssets)
         page.companyId = source.companyId
-        const previousPage = pageById.get(page.id)
+        const previousPage = pageById.get(page.id) ?? await this.repo.getPage(job.kbId, page.id)
         if (previousPage && previousPage.path !== page.path) {
           await this.storage.deleteObject(job.kbId, previousPage.path)
         }
-        await this.repo.upsertPage(page)
+        const savedPage = await this.repo.upsertPage(page)
         await this.repo.replacePageSources(job.kbId, page.id, [{ companyId: source.companyId, kbId: job.kbId, pageId: page.id, sourceId: source.id }])
         await this.repo.replaceChunks(job.kbId, page.id, await this.buildChunks(job.kbId, page.id, content))
         writtenPageIds.push(page.id)
-        pageById.set(page.id, page)
+        writtenPages.push(savedPage)
+        pageById.set(savedPage.id, savedPage)
       }
 
       for (const block of blocks.filter((item) => item.kind === "review")) {
@@ -287,9 +318,13 @@ export class IngestService {
         await this.repo.addReview(review)
       }
 
-      pageById.set("index", await this.rebuildIndexPage(job.kbId))
-      await this.rebuildPageLinks(job.kbId, [...pageById.values()])
-      if (this.graphIndex) await syncGraphIndexForKnowledgeBase(this.repo, this.graphIndex, job.kbId)
+      if (ingestScope.mode === "incremental") {
+        await this.rebuildTouchedPageLinks(job.kbId, writtenPages, this.uniquePages([...existingPages, ...writtenPages]))
+      } else {
+        pageById.set("index", await this.rebuildIndexPage(job.kbId))
+        await this.rebuildPageLinks(job.kbId, [...pageById.values()])
+        if (this.graphIndex) await syncGraphIndexForKnowledgeBase(this.repo, this.graphIndex, job.kbId)
+      }
       await this.repo.setIngestCache(job.kbId, source.id, source.sha256, writtenPageIds)
       await this.repo.saveSource({ ...source, status: "ingested", updatedAt: nowIso(), error: undefined })
       await this.repo.touchKnowledgeBase(job.kbId)
@@ -303,17 +338,79 @@ export class IngestService {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       const source = await this.repo.getSource(job.sourceId)
-      if (source) await this.repo.saveSource({ ...source, status: "failed", updatedAt: nowIso(), error: message })
+      const cancelled = this.cancelled.has(job.id)
+      if (source) await this.repo.saveSource({ ...source, status: cancelled ? "cancelled" : "failed", updatedAt: nowIso(), error: cancelled ? undefined : message })
       await update({
-        status: this.cancelled.has(job.id) ? "cancelled" : "failed",
-        progress: this.cancelled.has(job.id) ? job.progress : 100,
-        stage: this.cancelled.has(job.id) ? "Cancelled" : "Failed",
-        error: message,
+        status: cancelled ? "cancelled" : "failed",
+        progress: cancelled ? job.progress : 100,
+        stage: cancelled ? "Cancelled" : "Failed",
+        error: cancelled ? undefined : message,
         completedAt: nowIso(),
       })
     } finally {
       this.cancelled.delete(job.id)
     }
+  }
+
+  private async resolveIngestContextScope(kbId: string, source: SourceDocument, sourceText: string): Promise<IngestContextScope> {
+    const sourceCount = await this.repo.countSources(kbId)
+    if (sourceCount <= LARGE_CORPUS_SOURCE_THRESHOLD) {
+      return {
+        mode: "full",
+        sourceCount,
+        contextPages: await this.repo.listPages(kbId),
+      }
+    }
+
+    const limit = Math.max(1, Math.min(LARGE_CORPUS_RELATED_PAGE_LIMIT, 100))
+    const phrase = source.fileName.replace(/\.[^.]+$/, "").replace(/[-_]+/g, " ").trim()
+    const queryText = [
+      source.fileName,
+      source.relativePath,
+      source.folderContext,
+      sourceText.slice(0, 12_000),
+    ].filter(Boolean).join("\n")
+    const tokens = tokenize(queryText).slice(0, 96)
+    const vectorPages = await this.findVectorRelatedPages(kbId, queryText, limit)
+    const lexicalPages = await this.repo.findRelatedPagesForIngest(kbId, {
+      phrase,
+      tokens,
+      limit,
+      excludePageIds: vectorPages.map((page) => page.id),
+    })
+
+    return {
+      mode: "incremental",
+      sourceCount,
+      contextPages: this.uniquePages([...vectorPages, ...lexicalPages]).slice(0, limit),
+    }
+  }
+
+  private async findVectorRelatedPages(kbId: string, queryText: string, limit: number): Promise<WikiPage[]> {
+    try {
+      const embedding = await this.llm.embedForKnowledgeBase(kbId, queryText.slice(0, 4_000))
+      if (!embedding) return []
+      const hits = await this.repo.searchPagesByVector(kbId, embedding, limit)
+      const pages: WikiPage[] = []
+      for (const hit of hits) {
+        const page = await this.repo.getPage(kbId, hit.pageId)
+        if (page && !isStructuralWikiPage(page) && page.type !== "query") pages.push(page)
+      }
+      return pages
+    } catch {
+      return []
+    }
+  }
+
+  private uniquePages(pages: WikiPage[]): WikiPage[] {
+    const seen = new Set<string>()
+    const out: WikiPage[] = []
+    for (const page of pages) {
+      if (seen.has(page.id)) continue
+      seen.add(page.id)
+      out.push(page)
+    }
+    return out
   }
 
   private fallbackAnalysis(sourcePath: string, text: string, images: ImageAsset[]): string {
@@ -393,6 +490,15 @@ export class IngestService {
       .slice(0, 240)
       .map((page) => `- ${page.id} [${page.type}] ${page.title} (${page.path})`)
       .join("\n")
+  }
+
+  private async rebuildTouchedPageLinks(kbId: string, touchedPages: WikiPage[], resolverPages: WikiPage[]): Promise<void> {
+    const linkPages = this.uniquePages(resolverPages).filter((page) => page.type !== "query" && !isStructuralWikiPage(page))
+    const resolver = new WikiLinkResolver(linkPages)
+    for (const page of touchedPages) {
+      if (page.kbId !== kbId) continue
+      await this.repo.replacePageLinks(kbId, page.id, wikiLinksForPage(page, resolver))
+    }
   }
 
   private async rebuildPageLinks(kbId: string, pages: WikiPage[]): Promise<void> {

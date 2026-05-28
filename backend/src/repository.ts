@@ -22,6 +22,7 @@ import type {
   PageSource,
   ReviewItem,
   SourceDocument,
+  SourceIngestSummary,
   UserApiKey,
   WikiLink,
   WikiPage,
@@ -84,6 +85,9 @@ export interface KnowledgeRepository {
   deleteKnowledgeBase(kbId: string): Promise<void>
   saveSource(source: SourceDocument): Promise<SourceDocument>
   listSources(kbId: string): Promise<SourceDocument[]>
+  sourceIngestSummary(kbId: string): Promise<SourceIngestSummary>
+  listSourcesNeedingIngest(kbId: string): Promise<SourceDocument[]>
+  countSources(kbId: string): Promise<number>
   getSource(sourceId: string): Promise<SourceDocument | undefined>
   saveTask(task: BackgroundTask): Promise<BackgroundTask>
   listTasks(input?: { kbId?: string; companyId?: string }): Promise<BackgroundTask[]>
@@ -96,6 +100,12 @@ export interface KnowledgeRepository {
   listQueuedJobs(): Promise<IngestJob[]>
   upsertPage(page: WikiPage): Promise<WikiPage>
   listPages(kbId: string): Promise<WikiPage[]>
+  findRelatedPagesForIngest(kbId: string, input: {
+    phrase: string
+    tokens: string[]
+    limit: number
+    excludePageIds?: string[]
+  }): Promise<WikiPage[]>
   getPage(kbId: string, pageId: string): Promise<WikiPage | undefined>
   replacePageLinks(kbId: string, pageId: string, links: WikiLink[]): Promise<void>
   listLinks(kbId: string): Promise<WikiLink[]>
@@ -283,12 +293,22 @@ export class PostgresRepository implements KnowledgeRepository {
       ALTER TABLE sources ADD COLUMN IF NOT EXISTS root TEXT NOT NULL DEFAULT 'raw';
       ALTER TABLE sources ADD COLUMN IF NOT EXISTS parent_path TEXT NOT NULL DEFAULT '';
       ALTER TABLE sources ADD COLUMN IF NOT EXISTS upload_batch_id TEXT;
+      ALTER TABLE sources ADD COLUMN IF NOT EXISTS ingest_required BOOLEAN NOT NULL DEFAULT TRUE;
       UPDATE sources s SET company_id = kb.company_id FROM knowledge_bases kb WHERE s.kb_id = kb.id AND s.company_id IS NULL;
       UPDATE sources SET root = 'raw' WHERE root IS NULL OR root = '';
       UPDATE sources SET parent_path = regexp_replace(relative_path, '/[^/]+$', '') WHERE parent_path = '' AND relative_path LIKE '%/%';
+      UPDATE sources SET status = 'uploaded' WHERE status IS NULL OR status NOT IN ('uploaded', 'queued', 'parsing', 'ingested', 'failed', 'cancelled');
+      UPDATE sources SET ingest_required = FALSE
+        WHERE root = 'raw'
+          AND lower(relative_path) ~ '\\.(mp4|webm|mov|avi|mkv|flv|wmv|m4v)$';
       ALTER TABLE sources ALTER COLUMN company_id SET NOT NULL;
       ALTER TABLE sources DROP CONSTRAINT IF EXISTS sources_root_check;
       ALTER TABLE sources ADD CONSTRAINT sources_root_check CHECK (root IN ('raw', 'wiki'));
+      ALTER TABLE sources DROP CONSTRAINT IF EXISTS sources_status_check;
+      ALTER TABLE sources ADD CONSTRAINT sources_status_check CHECK (status IN ('uploaded', 'queued', 'parsing', 'ingested', 'failed', 'cancelled'));
+      CREATE INDEX IF NOT EXISTS sources_kb_ingest_status_idx ON sources(kb_id, root, ingest_required, status, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS sources_kb_ingest_backlog_idx ON sources(kb_id, updated_at DESC)
+        WHERE root = 'raw' AND ingest_required AND status IN ('uploaded', 'failed', 'cancelled');
 
       CREATE TABLE IF NOT EXISTS ingest_tasks (
         id TEXT PRIMARY KEY,
@@ -311,12 +331,25 @@ export class PostgresRepository implements KnowledgeRepository {
       CREATE INDEX IF NOT EXISTS ingest_tasks_kb_created_idx ON ingest_tasks(kb_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS ingest_tasks_company_created_idx ON ingest_tasks(company_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS ingest_tasks_status_created_idx ON ingest_tasks(status, created_at);
+      UPDATE ingest_tasks SET status = 'failed' WHERE status NOT IN ('queued', 'running', 'completed', 'failed', 'cancelled');
+      UPDATE ingest_tasks SET progress = GREATEST(0, LEAST(100, progress));
+      ALTER TABLE ingest_tasks DROP CONSTRAINT IF EXISTS ingest_tasks_status_check;
+      ALTER TABLE ingest_tasks ADD CONSTRAINT ingest_tasks_status_check CHECK (status IN ('queued', 'running', 'completed', 'failed', 'cancelled'));
+      ALTER TABLE ingest_tasks DROP CONSTRAINT IF EXISTS ingest_tasks_progress_check;
+      ALTER TABLE ingest_tasks ADD CONSTRAINT ingest_tasks_progress_check CHECK (progress >= 0 AND progress <= 100);
 
       ALTER TABLE ingest_jobs ADD COLUMN IF NOT EXISTS company_id TEXT REFERENCES companies(id) ON DELETE CASCADE;
       ALTER TABLE ingest_jobs ADD COLUMN IF NOT EXISTS task_id TEXT REFERENCES ingest_tasks(id) ON DELETE SET NULL;
       UPDATE ingest_jobs j SET company_id = kb.company_id FROM knowledge_bases kb WHERE j.kb_id = kb.id AND j.company_id IS NULL;
       ALTER TABLE ingest_jobs ALTER COLUMN company_id SET NOT NULL;
       CREATE INDEX IF NOT EXISTS ingest_jobs_task_idx ON ingest_jobs(task_id);
+      UPDATE ingest_jobs SET status = 'failed' WHERE status NOT IN ('queued', 'running', 'completed', 'failed', 'cancelled');
+      UPDATE ingest_jobs SET progress = GREATEST(0, LEAST(100, progress));
+      ALTER TABLE ingest_jobs DROP CONSTRAINT IF EXISTS ingest_jobs_status_check;
+      ALTER TABLE ingest_jobs ADD CONSTRAINT ingest_jobs_status_check CHECK (status IN ('queued', 'running', 'completed', 'failed', 'cancelled'));
+      ALTER TABLE ingest_jobs DROP CONSTRAINT IF EXISTS ingest_jobs_progress_check;
+      ALTER TABLE ingest_jobs ADD CONSTRAINT ingest_jobs_progress_check CHECK (progress >= 0 AND progress <= 100);
+      CREATE INDEX IF NOT EXISTS page_chunks_tokens_gin_idx ON page_chunks USING GIN(tokens);
 
       ALTER TABLE wiki_pages ADD COLUMN IF NOT EXISTS company_id TEXT REFERENCES companies(id) ON DELETE CASCADE;
       UPDATE wiki_pages p SET company_id = kb.company_id FROM knowledge_bases kb WHERE p.kb_id = kb.id AND p.company_id IS NULL;
@@ -830,8 +863,8 @@ export class PostgresRepository implements KnowledgeRepository {
     const result = await this.pool.query<Row>(
       `INSERT INTO sources
          (id, company_id, kb_id, root, file_name, relative_path, parent_path, upload_batch_id, storage_key,
-          content_type, size, sha256, status, folder_context, created_at, updated_at, error)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+          content_type, size, sha256, status, ingest_required, folder_context, created_at, updated_at, error)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
        ON CONFLICT (company_id, kb_id, root, relative_path)
        DO UPDATE SET file_name = EXCLUDED.file_name,
                      parent_path = EXCLUDED.parent_path,
@@ -841,6 +874,7 @@ export class PostgresRepository implements KnowledgeRepository {
                      size = EXCLUDED.size,
                      sha256 = EXCLUDED.sha256,
                      status = EXCLUDED.status,
+                     ingest_required = EXCLUDED.ingest_required,
                      folder_context = EXCLUDED.folder_context,
                      updated_at = EXCLUDED.updated_at,
                      error = EXCLUDED.error
@@ -859,6 +893,7 @@ export class PostgresRepository implements KnowledgeRepository {
         source.size,
         source.sha256,
         source.status,
+        source.ingestRequired,
         source.folderContext,
         source.createdAt,
         source.updatedAt,
@@ -871,6 +906,58 @@ export class PostgresRepository implements KnowledgeRepository {
   async listSources(kbId: string): Promise<SourceDocument[]> {
     const result = await this.pool.query<Row>("SELECT * FROM sources WHERE kb_id = $1 ORDER BY relative_path", [kbId])
     return result.rows.map((row) => this.mapSource(row))
+  }
+
+  async sourceIngestSummary(kbId: string): Promise<SourceIngestSummary> {
+    const result = await this.pool.query<Row>(
+      `SELECT
+         COUNT(*) FILTER (WHERE root = 'raw' AND ingest_required) AS total_required,
+         COUNT(*) FILTER (WHERE root = 'raw' AND ingest_required AND status = 'ingested') AS ingested,
+         COUNT(*) FILTER (WHERE root = 'raw' AND ingest_required AND status IN ('queued', 'parsing')) AS active,
+         COUNT(*) FILTER (WHERE root = 'raw' AND ingest_required AND status IN ('uploaded', 'failed', 'cancelled')) AS ready,
+         COUNT(*) FILTER (WHERE root = 'raw' AND ingest_required AND status = 'failed') AS failed,
+         COUNT(*) FILTER (WHERE root = 'raw' AND ingest_required AND status = 'cancelled') AS cancelled
+       FROM sources
+       WHERE kb_id = $1`,
+      [kbId],
+    )
+    const row = result.rows[0] ?? {}
+    const totalRequired = Number(row.total_required ?? 0)
+    const ingested = Number(row.ingested ?? 0)
+    return {
+      totalRequired,
+      ingested,
+      active: Number(row.active ?? 0),
+      ready: Number(row.ready ?? 0),
+      failed: Number(row.failed ?? 0),
+      cancelled: Number(row.cancelled ?? 0),
+      missing: Math.max(0, totalRequired - ingested),
+    }
+  }
+
+  async listSourcesNeedingIngest(kbId: string): Promise<SourceDocument[]> {
+    const result = await this.pool.query<Row>(
+      `SELECT s.*
+       FROM sources s
+       WHERE s.kb_id = $1
+         AND s.root = 'raw'
+         AND s.ingest_required
+         AND s.status IN ('uploaded', 'failed', 'cancelled')
+         AND NOT EXISTS (
+           SELECT 1
+           FROM ingest_jobs j
+           WHERE j.source_id = s.id
+             AND j.status IN ('queued', 'running')
+         )
+       ORDER BY s.relative_path`,
+      [kbId],
+    )
+    return result.rows.map((row) => this.mapSource(row))
+  }
+
+  async countSources(kbId: string): Promise<number> {
+    const result = await this.pool.query<Row>("SELECT COUNT(*)::int AS count FROM sources WHERE kb_id = $1", [kbId])
+    return Number(result.rows[0]?.count ?? 0)
   }
 
   async getSource(sourceId: string): Promise<SourceDocument | undefined> {
@@ -1052,6 +1139,54 @@ export class PostgresRepository implements KnowledgeRepository {
 
   async listPages(kbId: string): Promise<WikiPage[]> {
     const result = await this.pool.query<Row>("SELECT * FROM wiki_pages WHERE kb_id = $1 ORDER BY path", [kbId])
+    return result.rows.map((row) => this.mapPage(row))
+  }
+
+  async findRelatedPagesForIngest(kbId: string, input: {
+    phrase: string
+    tokens: string[]
+    limit: number
+    excludePageIds?: string[]
+  }): Promise<WikiPage[]> {
+    const tokens = [...new Set(input.tokens.map((token) => token.trim().toLowerCase()).filter((token) => token.length > 1))].slice(0, 64)
+    const phrase = input.phrase.trim().toLowerCase().slice(0, 180)
+    if (tokens.length === 0 && phrase.length === 0) return []
+    const excludePageIds = input.excludePageIds ?? []
+    const limit = Math.max(1, Math.min(input.limit, 100))
+    const structuralPaths = ["wiki/index.md", "wiki/log.md", "wiki/overview.md", "wiki/purpose.md", "wiki/schema.md"]
+    const result = await this.pool.query<Row>(
+      `WITH chunk_scores AS (
+         SELECT page_id, COUNT(*)::int AS chunk_hits
+         FROM page_chunks
+         WHERE kb_id = $1
+           AND cardinality($2::text[]) > 0
+           AND tokens && $2::text[]
+         GROUP BY page_id
+       ),
+       page_scores AS (
+         SELECT p.*,
+                COALESCE(c.chunk_hits, 0) * 12
+                + CASE WHEN $3 <> '' AND lower(p.title) LIKE ('%' || $3 || '%') THEN 60 ELSE 0 END
+                + CASE WHEN $3 <> '' AND lower(p.path) LIKE ('%' || $3 || '%') THEN 35 ELSE 0 END
+                + (
+                    SELECT COUNT(*)::int
+                    FROM unnest($2::text[]) AS q(token)
+                    WHERE lower(p.title || ' ' || p.path) LIKE ('%' || q.token || '%')
+                  ) * 8 AS related_score
+         FROM wiki_pages p
+         LEFT JOIN chunk_scores c ON c.page_id = p.id
+         WHERE p.kb_id = $1
+           AND NOT (p.id = ANY($4::text[]))
+           AND NOT (p.path = ANY($5::text[]))
+           AND p.page_type <> 'query'
+       )
+       SELECT *
+       FROM page_scores
+       WHERE related_score > 0
+       ORDER BY related_score DESC, updated_at DESC, path
+       LIMIT $6`,
+      [kbId, tokens, phrase, excludePageIds, structuralPaths, limit],
+    )
     return result.rows.map((row) => this.mapPage(row))
   }
 
@@ -1509,6 +1644,7 @@ export class PostgresRepository implements KnowledgeRepository {
       size: Number(row.size),
       sha256: String(row.sha256),
       status: String(row.status) as SourceDocument["status"],
+      ingestRequired: Boolean(row.ingest_required ?? true),
       folderContext: String(row.folder_context ?? ""),
       createdAt: iso(row.created_at),
       updatedAt: iso(row.updated_at),

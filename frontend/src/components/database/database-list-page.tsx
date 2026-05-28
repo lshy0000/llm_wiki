@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react"
-import { Brain, LibraryBig, Plus, X } from "lucide-react"
+import { Brain, LibraryBig, Loader2, Play, Plus, X } from "lucide-react"
 import { embeddingModelLabel } from "@/model-provider-presets"
 import { api } from "@/web/api"
-import type { CompanyModel, KnowledgeBase } from "@/web/types"
+import type { CompanyModel, KnowledgeBase, SourceIngestSummary } from "@/web/types"
 
 export function DatabaseListPage({
   error,
@@ -17,33 +17,48 @@ export function DatabaseListPage({
   onCreate: () => void
   onOpen: (kbId: string) => void
 }) {
-  const [fileCounts, setFileCounts] = useState<Record<string, number>>({})
+  const [ingestSummaries, setIngestSummaries] = useState<Record<string, SourceIngestSummary>>({})
+  const [startingIngest, setStartingIngest] = useState<Record<string, boolean>>({})
+  const [ingestErrors, setIngestErrors] = useState<Record<string, string>>({})
 
   useEffect(() => {
     let alive = true
     if (kbs.length === 0) {
-      setFileCounts({})
+      setIngestSummaries({})
       return () => { alive = false }
     }
     void Promise.all(
       kbs.map(async (kb) => {
         try {
-          const sources = await api.listSources(kb.id)
-          return [kb.id, sources.filter((source) => source.root === "raw").length] as const
+          return [kb.id, await api.sourceIngestSummary(kb.id)] as const
         } catch {
           return [kb.id, undefined] as const
         }
       }),
     ).then((entries) => {
       if (!alive) return
-      const next: Record<string, number> = {}
-      for (const [kbId, count] of entries) {
-        if (typeof count === "number") next[kbId] = count
+      const next: Record<string, SourceIngestSummary> = {}
+      for (const [kbId, summary] of entries) {
+        if (summary) next[kbId] = summary
       }
-      setFileCounts(next)
+      setIngestSummaries(next)
     })
     return () => { alive = false }
   }, [kbs])
+
+  const ingestMissing = async (kbId: string) => {
+    if (startingIngest[kbId]) return
+    setStartingIngest((items) => ({ ...items, [kbId]: true }))
+    setIngestErrors((items) => ({ ...items, [kbId]: "" }))
+    try {
+      const result = await api.ingestMissingSources(kbId)
+      setIngestSummaries((items) => ({ ...items, [kbId]: result.summary }))
+    } catch (err) {
+      setIngestErrors((items) => ({ ...items, [kbId]: err instanceof Error ? err.message : String(err) }))
+    } finally {
+      setStartingIngest((items) => ({ ...items, [kbId]: false }))
+    }
+  }
 
   return (
     <section className="flex h-full flex-col bg-[#f6f7f9] text-neutral-950">
@@ -68,7 +83,15 @@ export function DatabaseListPage({
         ) : (
           <div className="grid grid-cols-[repeat(auto-fill,minmax(320px,1fr))] gap-4">
             {kbs.map((kb) => (
-              <KnowledgeBaseCard key={kb.id} fileCount={fileCounts[kb.id]} kb={kb} onOpen={() => onOpen(kb.id)} />
+              <KnowledgeBaseCard
+                key={kb.id}
+                ingestStarting={Boolean(startingIngest[kb.id])}
+                ingestSummary={ingestSummaries[kb.id]}
+                ingestError={ingestErrors[kb.id]}
+                kb={kb}
+                onIngestMissing={() => void ingestMissing(kb.id)}
+                onOpen={() => onOpen(kb.id)}
+              />
             ))}
           </div>
         )}
@@ -77,23 +100,61 @@ export function DatabaseListPage({
   )
 }
 
-function KnowledgeBaseCard({ fileCount, kb, onOpen }: { fileCount?: number; kb: KnowledgeBase; onOpen: () => void }) {
+function KnowledgeBaseCard({
+  ingestStarting,
+  ingestSummary,
+  ingestError,
+  kb,
+  onIngestMissing,
+  onOpen,
+}: {
+  ingestStarting: boolean
+  ingestSummary?: SourceIngestSummary
+  ingestError?: string
+  kb: KnowledgeBase
+  onIngestMissing: () => void
+  onOpen: () => void
+}) {
+  const ready = ingestSummary?.ready ?? 0
+  const active = ingestSummary?.active ?? 0
+  const missing = ingestSummary?.missing ?? 0
   return (
-    <button
-      className="group flex h-32 flex-col overflow-hidden rounded-lg border border-neutral-200 bg-white p-3 text-left shadow-sm transition hover:border-cyan-200 hover:bg-cyan-50/40 hover:shadow-md"
-      onClick={onOpen}
-    >
-      <div className="flex items-start gap-3">
-        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-cyan-100 bg-cyan-50 text-cyan-700">
-          <LibraryBig className="h-5 w-5" />
+    <article className="group flex min-h-44 flex-col overflow-hidden rounded-lg border border-neutral-200 bg-white p-3 text-left shadow-sm transition hover:border-cyan-200 hover:bg-cyan-50/40 hover:shadow-md">
+      <button className="min-w-0 flex-1 text-left" onClick={onOpen} type="button">
+        <div className="flex items-start gap-3">
+          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border border-cyan-100 bg-cyan-50 text-cyan-700">
+            <LibraryBig className="h-5 w-5" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h2 className="truncate text-base font-semibold">{kb.name}</h2>
+            <p className="mt-1 text-xs text-neutral-500">
+              {ingestSummary ? `${ingestSummary.ingested}/${ingestSummary.totalRequired} 个文档已入库` : "正在统计文档"}
+            </p>
+          </div>
         </div>
-        <div className="min-w-0 flex-1">
-          <h2 className="truncate text-base font-semibold">{kb.name}</h2>
-          <p className="mt-1 text-xs text-neutral-500">{typeof fileCount === "number" ? `${fileCount} 个文件` : "正在统计文件"}</p>
+        <p className="mt-3 line-clamp-2 text-sm leading-5 text-neutral-600">{kb.description || "暂无描述"}</p>
+      </button>
+      {ingestSummary && missing > 0 && (
+        <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2">
+          <div className="min-w-0 text-xs text-amber-900">
+            <div className="font-medium">{missing} 个文档未入库</div>
+            <div className="mt-0.5 truncate text-amber-800">
+              {active > 0 ? `${active} 个正在处理中` : "可启动新的入库任务"}
+            </div>
+          </div>
+          <button
+            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-cyan-700 px-3 text-xs font-medium text-white disabled:bg-neutral-300"
+            disabled={ready === 0 || ingestStarting}
+            onClick={onIngestMissing}
+            type="button"
+          >
+            {ingestStarting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+            入库 {ready}
+          </button>
         </div>
-      </div>
-      <p className="mt-3 line-clamp-2 text-sm leading-5 text-neutral-600">{kb.description || "暂无描述"}</p>
-    </button>
+      )}
+      {ingestError && <p className="mt-2 line-clamp-2 text-xs text-red-700">{ingestError}</p>}
+    </article>
   )
 }
 

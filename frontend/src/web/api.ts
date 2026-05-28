@@ -16,6 +16,8 @@ import type {
   ReviewStatus,
   SearchResponse,
   SourceDocument,
+  SourceIngestMissingResponse,
+  SourceIngestSummary,
   SourceUploadResponse,
   ToolDefinition,
   ToolConfigResponse,
@@ -198,6 +200,9 @@ export const api = {
     })
   },
   listSources: (kbId: string) => request<SourceDocument[]>(`/api/kbs/${kbId}/sources`),
+  sourceIngestSummary: (kbId: string) => request<SourceIngestSummary>(`/api/kbs/${encodeURIComponent(kbId)}/sources/ingest-summary`),
+  ingestMissingSources: (kbId: string) =>
+    request<SourceIngestMissingResponse>(`/api/kbs/${encodeURIComponent(kbId)}/sources/ingest-missing`, { method: "POST" }),
   listJobs: (kbId: string) => request<IngestJob[]>(`/api/kbs/${kbId}/jobs`),
   listTasks: (kbId?: string) =>
     request<BackgroundTask[]>(kbId ? `/api/kbs/${encodeURIComponent(kbId)}/tasks` : "/api/tasks"),
