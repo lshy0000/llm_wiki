@@ -469,18 +469,18 @@ function SourcesPanel({ kbId }: { kbId: string }) {
               <h2 className="shrink-0 text-base font-semibold">文件目录与摄取队列</h2>
               <p className="min-w-0 flex-1 truncate text-sm text-neutral-600">raw 保留上传结构，wiki 生成可追溯页面。</p>
               <div className="flex shrink-0 items-center gap-2 text-xs text-neutral-600">
-              <span>上传到</span>
-              <span className="max-w-40 truncate rounded border border-cyan-100 bg-cyan-50 px-2 py-1 font-mono text-cyan-800">{selectedTargetLabel}</span>
-              {uploadTargetPath && (
-                <button
-                  className="rounded border border-neutral-200 px-2 py-1 hover:bg-neutral-50"
-                  disabled={uploading}
-                  onClick={() => setUploadTargetPath("")}
-                  type="button"
-                >
-                  使用 raw 根目录
-                </button>
-              )}
+                <span>上传到</span>
+                <span className="max-w-40 truncate rounded border border-cyan-100 bg-cyan-50 px-2 py-1 font-mono text-cyan-800">{selectedTargetLabel}</span>
+                {uploadTargetPath && (
+                  <button
+                    className="rounded border border-neutral-200 px-2 py-1 hover:bg-neutral-50"
+                    disabled={uploading}
+                    onClick={() => setUploadTargetPath("")}
+                    type="button"
+                  >
+                    使用 raw 根目录
+                  </button>
+                )}
               </div>
             </div>
             {uploadError && <p className="mt-2 text-xs text-red-700">{uploadError}</p>}

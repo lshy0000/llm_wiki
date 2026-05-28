@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { KeyRound, UserRound } from "lucide-react"
+import { AlertCircle, KeyRound, UserRound } from "lucide-react"
 import { api } from "@/web/api"
 import type { AuthPayload } from "@/web/types"
 
@@ -16,7 +16,7 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: (auth: AuthPayload) => v
     try {
       onLoggedIn(await api.ldapLogin(username, password))
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(loginErrorMessage(err))
     } finally {
       setBusy(false)
     }
@@ -51,7 +51,15 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: (auth: AuthPayload) => v
           placeholder="LDAP 密码"
           type="password"
         />
-        {error && <div className="mt-4 border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">{error}</div>}
+        {error && (
+          <div className="mt-4 flex gap-2 border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-900" role="alert">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>
+              <p className="font-medium">登录失败</p>
+              <p className="mt-0.5 text-red-800">{error}</p>
+            </div>
+          </div>
+        )}
         <button
           className="mt-5 inline-flex h-10 w-full items-center justify-center gap-2 bg-neutral-950 px-3 text-sm font-medium text-white disabled:opacity-50"
           disabled={busy || !username.trim() || !password}
@@ -63,4 +71,25 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: (auth: AuthPayload) => v
       </section>
     </main>
   )
+}
+
+function loginErrorMessage(err: unknown): string {
+  const message = parseApiError(err)
+  const normalized = message.toLowerCase()
+  if (normalized.includes("invalid credentials")) return "账号或密码不正确，请检查后重试。"
+  if (normalized.includes("username is required")) return "请输入账号。"
+  if (normalized.includes("password is required")) return "请输入密码。"
+  if (normalized.includes("ldap")) return "登录服务暂时不可用，请稍后重试或联系管理员。"
+  return "登录失败，请检查账号信息后重试。"
+}
+
+function parseApiError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err)
+  try {
+    const parsed = JSON.parse(raw) as { error?: unknown; message?: unknown }
+    const message = typeof parsed.error === "string" ? parsed.error : parsed.message
+    return typeof message === "string" ? message : raw
+  } catch {
+    return raw
+  }
 }

@@ -5,23 +5,30 @@ import { CreateKnowledgeBaseModal, DatabaseListPage } from "@/components/databas
 import { KnowledgeBaseDetail } from "@/components/knowledge-base/knowledge-base-detail"
 import { ExtensionsPage } from "@/pages/extensions-page"
 import { ApiKeysPage } from "@/pages/api-keys-page"
+import { DocsPage } from "@/pages/docs-page"
 import { LandingPage } from "@/pages/landing-page"
 import { LoginPage } from "@/pages/login-page"
 import { api } from "@/web/api"
 import type { AuthPayload, Capabilities, KnowledgeBase } from "@/web/types"
+
+type ThemeMode = "light" | "dark"
 
 type AppRoute =
   | { page: "home" }
   | { page: "database" }
   | { page: "detail"; kbId: string }
   | { page: "extensions" }
+  | { page: "docs"; docPath?: string }
   | { page: "companySettings" }
   | { page: "apiKeys" }
+
+const THEME_STORAGE_KEY = "llm-wiki.theme"
 
 function App() {
   const [auth, setAuth] = useState<AuthPayload | null>(null)
   const [kbs, setKbs] = useState<KnowledgeBase[]>([])
   const [route, setRoute] = useState<AppRoute>(() => readRoute())
+  const [theme, setTheme] = useState<ThemeMode>(() => readThemeMode())
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null)
   const [authLoading, setAuthLoading] = useState(true)
   const [loading, setLoading] = useState(true)
@@ -32,6 +39,10 @@ function App() {
   const navigate = (path: string) => {
     window.history.pushState(null, "", path)
     setRoute(readRoute())
+  }
+
+  const toggleTheme = () => {
+    setTheme((current) => current === "dark" ? "light" : "dark")
   }
 
   const loadKbs = async () => {
@@ -47,6 +58,16 @@ function App() {
       setLoading(false)
     }
   }
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", theme === "dark")
+    document.documentElement.style.colorScheme = theme
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme)
+    } catch {
+      // Ignore storage failures; the visible theme still changes for this session.
+    }
+  }, [theme])
 
   useEffect(() => {
     const onPopState = () => setRoute(readRoute())
@@ -95,7 +116,14 @@ function App() {
 
   if (route.page === "detail" && selected) {
     return (
-      <AppShell auth={auth} activePage={route.page} onNavigate={navigate} onLogout={() => void logout()}>
+      <AppShell
+        auth={auth}
+        activePage={route.page}
+        theme={theme}
+        onNavigate={navigate}
+        onLogout={() => void logout()}
+        onToggleTheme={toggleTheme}
+      >
         <KnowledgeBaseDetail
           kb={selected}
           isAdmin={auth.user.isPlatformAdmin || auth.user.role === "platform_admin" || auth.user.role === "org_admin"}
@@ -118,7 +146,14 @@ function App() {
 
   if (route.page === "detail" && !selected) {
     return (
-      <AppShell auth={auth} activePage={route.page} onNavigate={navigate} onLogout={() => void logout()}>
+      <AppShell
+        auth={auth}
+        activePage={route.page}
+        theme={theme}
+        onNavigate={navigate}
+        onLogout={() => void logout()}
+        onToggleTheme={toggleTheme}
+      >
         <section className="flex h-full items-center justify-center px-6 text-neutral-950">
           <div className="border border-neutral-200 bg-white p-6 text-center shadow-sm">
             <h1 className="text-lg font-semibold">知识库不存在或无权访问</h1>
@@ -133,15 +168,44 @@ function App() {
 
   if (route.page === "extensions") {
     return (
-      <AppShell auth={auth} activePage={route.page} onNavigate={navigate} onLogout={() => void logout()}>
+      <AppShell
+        auth={auth}
+        activePage={route.page}
+        theme={theme}
+        onNavigate={navigate}
+        onLogout={() => void logout()}
+        onToggleTheme={toggleTheme}
+      >
         <ExtensionsPage />
+      </AppShell>
+    )
+  }
+
+  if (route.page === "docs") {
+    return (
+      <AppShell
+        auth={auth}
+        activePage={route.page}
+        theme={theme}
+        onNavigate={navigate}
+        onLogout={() => void logout()}
+        onToggleTheme={toggleTheme}
+      >
+        <DocsPage docPath={route.docPath} onNavigate={navigate} />
       </AppShell>
     )
   }
 
   if (route.page === "companySettings") {
     return (
-      <AppShell auth={auth} activePage={route.page} onNavigate={navigate} onLogout={() => void logout()}>
+      <AppShell
+        auth={auth}
+        activePage={route.page}
+        theme={theme}
+        onNavigate={navigate}
+        onLogout={() => void logout()}
+        onToggleTheme={toggleTheme}
+      >
         <CompanySettingsPage auth={auth} capabilities={capabilities} />
       </AppShell>
     )
@@ -149,14 +213,28 @@ function App() {
 
   if (route.page === "apiKeys") {
     return (
-      <AppShell auth={auth} activePage={route.page} onNavigate={navigate} onLogout={() => void logout()}>
+      <AppShell
+        auth={auth}
+        activePage={route.page}
+        theme={theme}
+        onNavigate={navigate}
+        onLogout={() => void logout()}
+        onToggleTheme={toggleTheme}
+      >
         <ApiKeysPage />
       </AppShell>
     )
   }
 
   return (
-    <AppShell auth={auth} activePage={route.page} onNavigate={navigate} onLogout={() => void logout()}>
+    <AppShell
+      auth={auth}
+      activePage={route.page}
+      theme={theme}
+      onNavigate={navigate}
+      onLogout={() => void logout()}
+      onToggleTheme={toggleTheme}
+    >
       <DatabaseListPage
         error={error}
         kbs={kbs}
@@ -183,6 +261,11 @@ function readRoute(): AppRoute {
   if (pathname === "/") return { page: "home" }
   if (pathname === "/database") return { page: "database" }
   if (pathname === "/extensions") return { page: "extensions" }
+  if (pathname === "/docs") return { page: "docs" }
+  if (pathname.startsWith("/docs/")) {
+    const docPath = decodePath(pathname.slice("/docs/".length))
+    return docPath ? { page: "docs", docPath } : { page: "docs" }
+  }
   if (pathname === "/company-settings") return { page: "companySettings" }
   if (pathname === "/account/api-keys") return { page: "apiKeys" }
   if (pathname.startsWith("/database/")) {
@@ -190,6 +273,28 @@ function readRoute(): AppRoute {
     return kbId ? { page: "detail", kbId } : { page: "database" }
   }
   return { page: "home" }
+}
+
+function decodePath(value: string): string {
+  return value
+    .split("/")
+    .map((part) => {
+      try {
+        return decodeURIComponent(part)
+      } catch {
+        return part
+      }
+    })
+    .join("/")
+}
+
+function readThemeMode(): ThemeMode {
+  try {
+    const stored = window.localStorage.getItem(THEME_STORAGE_KEY)
+    return stored === "dark" ? "dark" : "light"
+  } catch {
+    return "light"
+  }
 }
 
 export default App
