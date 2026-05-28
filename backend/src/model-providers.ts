@@ -53,15 +53,20 @@ export interface ModelProviderTestResult {
 type JsonRecord = Record<string, unknown>
 
 interface ChatResponse {
-  choices?: Array<{ message?: { content?: string } }>
+  choices?: Array<{ message?: { content?: string; reasoning?: string; reasoning_content?: string } }>
 }
 
 interface AnthropicResponse {
-  content?: Array<{ type?: string; text?: string }>
+  content?: Array<{ type?: string; text?: string; thinking?: string }>
 }
 
 interface EmbeddingResponse {
   data?: Array<{ embedding?: number[] }>
+}
+
+export interface ModelCompletion {
+  content: string
+  reasoning?: string
 }
 
 const MODEL_SAVE_VALIDATION_TIMEOUT_MS = 20_000
@@ -228,11 +233,22 @@ export async function completeWithProvider(
   fallback: string,
   maxTokens: number,
 ): Promise<string> {
-  if (!model?.endpoint) return fallback
+  return (await completeDetailedWithProvider(model, messages, fallback, maxTokens)).content
+}
+
+export async function completeDetailedWithProvider(
+  model: RuntimeModelConfig | undefined,
+  messages: ModelMessage[],
+  fallback: string,
+  maxTokens: number,
+): Promise<ModelCompletion> {
+  if (!model?.endpoint) return { content: fallback }
   try {
-    return await completeStrict(model, messages, fallback, maxTokens)
+    return await completeStrictDetailed(model, messages, fallback, maxTokens)
   } catch (err) {
-    return `${fallback}\n\n> LLM fallback used because provider call failed: ${err instanceof Error ? err.message : String(err)}`
+    return {
+      content: `${fallback}\n\n> LLM fallback used because provider call failed: ${err instanceof Error ? err.message : String(err)}`,
+    }
   }
 }
 
@@ -315,18 +331,27 @@ async function completeStrict(
   fallback: string,
   maxTokens: number,
 ): Promise<string> {
-  if (model.protocol === "anthropic_messages") {
-    return completeAnthropic(model, messages, fallback, maxTokens)
-  }
-  return completeOpenAiCompatible(model, messages, fallback, maxTokens)
+  return (await completeStrictDetailed(model, messages, fallback, maxTokens)).content
 }
 
-async function completeOpenAiCompatible(
+async function completeStrictDetailed(
   model: RuntimeModelConfig,
   messages: ModelMessage[],
   fallback: string,
   maxTokens: number,
-): Promise<string> {
+): Promise<ModelCompletion> {
+  if (model.protocol === "anthropic_messages") {
+    return completeAnthropicDetailed(model, messages, fallback, maxTokens)
+  }
+  return completeOpenAiCompatibleDetailed(model, messages, fallback, maxTokens)
+}
+
+async function completeOpenAiCompatibleDetailed(
+  model: RuntimeModelConfig,
+  messages: ModelMessage[],
+  fallback: string,
+  maxTokens: number,
+): Promise<ModelCompletion> {
   const response = await fetch(openAiChatUrl(model), {
     method: "POST",
     headers: openAiHeaders(model),
@@ -334,15 +359,20 @@ async function completeOpenAiCompatible(
   })
   if (!response.ok) throw new Error(`LLM HTTP ${response.status}: ${await response.text()}`)
   const json = (await response.json()) as ChatResponse
-  return json.choices?.[0]?.message?.content?.trim() || fallback
+  const message = json.choices?.[0]?.message
+  const contentParts = splitThinkingFromContent(message?.content ?? "")
+  return {
+    content: contentParts.content || fallback,
+    reasoning: joinReasoning(message?.reasoning_content, message?.reasoning, contentParts.reasoning),
+  }
 }
 
-async function completeAnthropic(
+async function completeAnthropicDetailed(
   model: RuntimeModelConfig,
   messages: ModelMessage[],
   fallback: string,
   maxTokens: number,
-): Promise<string> {
+): Promise<ModelCompletion> {
   const system = messages.filter((message) => message.role === "system").map((message) => textFromMessage(message)).join("\n\n")
   const conversation = messages.filter((message) => message.role !== "system")
   const response = await fetch(anthropicMessagesUrl(model), {
@@ -360,7 +390,13 @@ async function completeAnthropic(
   })
   if (!response.ok) throw new Error(`Anthropic HTTP ${response.status}: ${await response.text()}`)
   const json = (await response.json()) as AnthropicResponse
-  return json.content?.map((item) => item.text ?? "").join("").trim() || fallback
+  const content = json.content?.filter((item) => item.type !== "thinking").map((item) => item.text ?? "").join("") ?? ""
+  const thinking = json.content?.filter((item) => item.type === "thinking").map((item) => item.thinking ?? item.text ?? "").join("\n\n")
+  const contentParts = splitThinkingFromContent(content)
+  return {
+    content: contentParts.content || fallback,
+    reasoning: joinReasoning(thinking, contentParts.reasoning),
+  }
 }
 
 async function embedOpenAiCompatible(model: RuntimeModelConfig, text: string): Promise<number[]> {
@@ -544,6 +580,30 @@ function anthropicContent(content: ModelMessage["content"]): unknown {
 function textFromMessage(message: ModelMessage): string {
   if (typeof message.content === "string") return message.content
   return message.content.filter((block) => block.type === "text").map((block) => block.text).join("\n")
+}
+
+function splitThinkingFromContent(content: string): ModelCompletion {
+  const reasoning: string[] = []
+  let visible = content.replace(/<think(?:ing)?>\s*([\s\S]*?)<\/think(?:ing)?>\s*/gi, (_match, inner: string) => {
+    if (inner.trim()) reasoning.push(inner.trim())
+    return ""
+  })
+  visible = visible.replace(/<think(?:ing)?>\s*([\s\S]*)$/gi, (_match, inner: string) => {
+    if (inner.trim()) reasoning.push(inner.trim())
+    return ""
+  })
+  return {
+    content: visible.trim(),
+    reasoning: joinReasoning(...reasoning),
+  }
+}
+
+function joinReasoning(...parts: unknown[]): string | undefined {
+  const value = parts
+    .map((part) => typeof part === "string" ? part.trim() : "")
+    .filter(Boolean)
+    .join("\n\n")
+  return value || undefined
 }
 
 function usesMaxCompletionTokens(model: RuntimeModelConfig): boolean {

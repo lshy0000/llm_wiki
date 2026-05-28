@@ -256,7 +256,7 @@ export interface ChatMessage {
 
 export type AgentType = "kb_dedicated" | "configurable"
 export type AgentRunStatus = "running" | "completed" | "failed" | "cancelled"
-export type AgentTraceType = "plan" | "tool" | "observation" | "answer" | "error"
+export type AgentTraceType = "plan" | "thinking" | "tool" | "observation" | "answer" | "error"
 
 export interface AgentConversation {
   id: string

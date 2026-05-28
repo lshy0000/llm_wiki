@@ -1,8 +1,10 @@
 import {
   companyModelToRuntime,
+  completeDetailedWithProvider,
   completeWithProvider,
   embedWithProvider,
   isRuntimeModelConfigured,
+  type ModelCompletion,
   type ModelMessage,
   type RuntimeModelConfig,
 } from "./model-providers.js"
@@ -22,8 +24,16 @@ export class LlmGateway {
     return this.completeWithConfig(await this.resolveModel(companyId, "llm"), messages, fallback, maxTokens)
   }
 
+  async completeDetailedForCompany(companyId: string, messages: LlmMessage[], fallback: string, maxTokens = 1800): Promise<ModelCompletion> {
+    return this.completeDetailedWithConfig(await this.resolveModel(companyId, "llm"), messages, fallback, maxTokens)
+  }
+
   private async completeWithConfig(model: RuntimeModelConfig | undefined, messages: LlmMessage[], fallback: string, maxTokens: number): Promise<string> {
     return completeWithProvider(model, messages, fallback, maxTokens)
+  }
+
+  private async completeDetailedWithConfig(model: RuntimeModelConfig | undefined, messages: LlmMessage[], fallback: string, maxTokens: number): Promise<ModelCompletion> {
+    return completeDetailedWithProvider(model, messages, fallback, maxTokens)
   }
 
   async captionImage(input: {

@@ -340,7 +340,7 @@ export interface ToolRunResponse<T = unknown> {
   result: T
 }
 
-export type AgentTraceType = "plan" | "tool" | "observation" | "answer" | "error"
+export type AgentTraceType = "plan" | "thinking" | "tool" | "observation" | "answer" | "error"
 
 export interface AgentTraceStep {
   id: string

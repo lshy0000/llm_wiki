@@ -523,7 +523,7 @@ function SourcesPanel({ kbId }: { kbId: string }) {
         </div>
       </section>
 
-      <section className="grid min-h-0 flex-1 grid-cols-2 gap-3 overflow-hidden p-3">
+      <section className="grid max-h-[55vh] min-h-0 flex-1 grid-cols-2 gap-3 overflow-hidden p-3">
         <TreePanel
           title="raw 上传目录"
           nodes={rawTree}
@@ -1225,19 +1225,6 @@ function AgentAssistantMessage({ message }: { message: AgentUiMessage }) {
           <MarkdownView content={message.content} />
         </div>
       )}
-      {message.citations && message.citations.length > 0 && <CitationList citations={message.citations} />}
-    </div>
-  )
-}
-
-function CitationList({ citations }: { citations: ChatCitation[] }) {
-  return (
-    <div className="mt-3 flex flex-wrap gap-2">
-      {citations.map((citation) => (
-        <span key={`${citation.pageId}-${citation.path}`} className="rounded-md border border-neutral-200 bg-neutral-50 px-2 py-1 text-xs text-neutral-700">
-          {citation.title} · {citation.path}
-        </span>
-      ))}
     </div>
   )
 }
@@ -1279,9 +1266,10 @@ function AgentTimelineStep({ step, isLast }: { step: AgentTraceStep; isLast: boo
         </div>
         {!isLast && <div className="mt-1 h-full min-h-4 w-px bg-neutral-200" />}
       </div>
-      <div className={`min-w-0 rounded-md border px-3 py-2 ${meta.cardClass}`}>
-        <div className="flex flex-wrap items-center justify-between gap-2">
+      <details className={`group min-w-0 rounded-md border ${meta.cardClass}`}>
+        <summary className="flex cursor-pointer list-none flex-wrap items-center justify-between gap-2 px-3 py-2 [&::-webkit-details-marker]:hidden">
           <div className="flex min-w-0 items-center gap-1.5">
+            <ChevronUp className="h-3 w-3 shrink-0 rotate-90 text-neutral-400 transition-transform group-open:rotate-180" />
             <span className={`shrink-0 text-[11px] font-semibold ${meta.labelClass}`}>{meta.label}</span>
             <span className="min-w-0 truncate text-xs font-semibold text-neutral-950">{step.title}</span>
           </div>
@@ -1294,13 +1282,15 @@ function AgentTimelineStep({ step, isLast }: { step: AgentTraceStep; isLast: boo
               </span>
             )}
           </div>
+        </summary>
+        <div className="border-t border-neutral-200/70 px-3 pb-3 pt-2">
+          <p className="whitespace-pre-wrap break-words text-xs leading-5 text-neutral-700">{step.detail}</p>
+          <div className="mt-2 grid gap-2">
+            {step.input !== undefined && <JsonBlock label="输入" value={step.input} />}
+            {step.outputSummary !== undefined && <JsonBlock label={step.type === "error" ? "错误" : "结果"} value={step.outputSummary} />}
+          </div>
         </div>
-        <p className="mt-1 whitespace-pre-wrap break-words text-xs leading-5 text-neutral-700">{step.detail}</p>
-        <div className="mt-2 grid gap-2">
-          {step.input !== undefined && <JsonBlock label="输入" value={step.input} />}
-          {step.outputSummary !== undefined && <JsonBlock label={step.type === "error" ? "错误" : "结果"} value={step.outputSummary} />}
-        </div>
-      </div>
+      </details>
     </div>
   )
 }
@@ -1321,6 +1311,24 @@ function traceStepMeta(step: AgentTraceStep): {
   cardClass: string
   labelClass: string
 } {
+  if (step.type === "plan") {
+    return {
+      label: "计划",
+      icon: ClipboardList,
+      dotClass: "border-cyan-200 bg-cyan-50 text-cyan-700",
+      cardClass: "border-cyan-100 bg-cyan-50/30",
+      labelClass: "text-cyan-700",
+    }
+  }
+  if (step.type === "thinking") {
+    return {
+      label: "思考",
+      icon: Brain,
+      dotClass: "border-purple-200 bg-purple-50 text-purple-700",
+      cardClass: "border-purple-100 bg-purple-50/30",
+      labelClass: "text-purple-700",
+    }
+  }
   if (step.type === "tool") {
     return {
       label: "工具",
@@ -1358,7 +1366,7 @@ function traceStepMeta(step: AgentTraceStep): {
     }
   }
   return {
-    label: "思考",
+    label: "记录",
     icon: Brain,
     dotClass: "border-cyan-200 bg-cyan-50 text-cyan-700",
     cardClass: "border-cyan-100 bg-cyan-50/30",

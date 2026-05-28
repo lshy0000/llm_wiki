@@ -157,11 +157,14 @@ export class AgentService {
       }, input.events?.onStep)
 
       if (isGreeting(question)) {
-        const answer = await this.answerGreeting(input.kb.companyId, question)
-        const assistant = await this.storeAssistant(input.kb, conversationId, answer, [])
+        const answerResult = await this.answerGreeting(input.kb.companyId, question)
+        if (answerResult.reasoning) {
+          await this.recordStep(run, trace, "thinking", "Model thinking", answerResult.reasoning, {}, input.events?.onStep)
+        }
+        const assistant = await this.storeAssistant(input.kb, conversationId, answerResult.answer, [])
         await this.recordStep(run, trace, "answer", "Direct answer", "Greeting detected; no knowledge-base tools were called.", {}, input.events?.onStep)
         run = await this.repo.saveAgentRun({ ...run, assistantMessageId: assistant.id, status: "completed", completedAt: nowIso(), error: undefined })
-        return { conversationId, answer, citations: [], trace }
+        return { conversationId, answer: answerResult.answer, citations: [], trace }
       }
 
       const needsGraph = shouldUseMindmap(question)
@@ -196,14 +199,17 @@ export class AgentService {
       const files = await this.readEvidenceFilesForRun(run, context, trace, retrieval, shouldReadEvidence(question, retrieval), shouldReadRawSource(question))
       const citations = citationsFrom(retrieval)
       const fallback = fallbackAnswer(question, retrieval, files)
-      const answer = await this.generateAnswer(input.kb, question, history, retrieval, mindmap, files, customToolResults, storageFileTree, fallback)
+      const answerResult = await this.generateAnswer(input.kb, question, history, retrieval, mindmap, files, customToolResults, storageFileTree, fallback)
+      if (answerResult.reasoning) {
+        await this.recordStep(run, trace, "thinking", "Model thinking", answerResult.reasoning, {}, input.events?.onStep)
+      }
 
-      const assistant = await this.storeAssistant(input.kb, conversationId, answer, citations)
+      const assistant = await this.storeAssistant(input.kb, conversationId, answerResult.answer, citations)
       await this.recordStep(run, trace, "answer", "Generated answer", `Generated from ${retrieval.results.length} recalled result(s) and ${files.length} page excerpt(s).`, {
         outputSummary: { citations: citations.length },
       }, input.events?.onStep)
       run = await this.repo.saveAgentRun({ ...run, assistantMessageId: assistant.id, status: "completed", completedAt: nowIso(), error: undefined })
-      return { conversationId, answer, citations, trace }
+      return { conversationId, answer: answerResult.answer, citations, trace }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       await this.recordStep(run, trace, "error", "Agent failed", message, {}, input.events?.onStep).catch(() => undefined)
@@ -212,8 +218,8 @@ export class AgentService {
     }
   }
 
-  private async answerGreeting(companyId: string, question: string): Promise<string> {
-    return this.llm.completeForCompany(
+  private async answerGreeting(companyId: string, question: string): Promise<{ answer: string; reasoning?: string }> {
+    const completion = await this.llm.completeDetailedForCompany(
       companyId,
       [
         {
@@ -225,6 +231,7 @@ export class AgentService {
       "你好，我可以基于当前知识库帮你检索、归纳和回答问题。",
       240,
     )
+    return { answer: completion.content, reasoning: completion.reasoning }
   }
 
   private async generateAnswer(
@@ -237,7 +244,7 @@ export class AgentService {
     customToolResults: CustomToolEvidence[],
     storageFileTree: StorageFileTreeEvidence | undefined,
     fallback: string,
-  ): Promise<string> {
+  ): Promise<{ answer: string; reasoning?: string }> {
     const messages: LlmMessage[] = [
       {
         role: "system",
@@ -261,7 +268,8 @@ export class AgentService {
         content: renderAgentPrompt(kb, question, retrieval, mindmap, files, customToolResults, storageFileTree),
       },
     ]
-    return this.llm.completeForCompany(kb.companyId, messages, fallback, 1800)
+    const completion = await this.llm.completeDetailedForCompany(kb.companyId, messages, fallback, 1800)
+    return { answer: completion.content, reasoning: completion.reasoning }
   }
 
   private async readEvidenceFilesForRun(
