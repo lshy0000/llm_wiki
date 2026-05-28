@@ -8,9 +8,9 @@ series_order: 1
 ---
 
 > **KN 企业知识网络系列（共三篇）**：
-> - **上篇（本文）**：nashsu/llm_wiki 源码分析 —— 当前架构是什么，核心思想是什么，企业级潜力在哪
-> - **中篇**：[KN 企业知识网络架构设计](/research-blog/posts/kn-architecture-design/) —— 如果要改造成企业级，架构应该长什么样
-> - **下篇**：[KN 改造方案：从源码出发](/research-blog/posts/kn-transformation-from-nashsu/) —— 具体怎么改，最终产品形态
+> - **上篇（本文）**：[nashsu/llm_wiki 源码架构分析](/docs/nashsu-llmwiki-architecture-deep-dive.md) —— 当前架构是什么，核心思想是什么，企业级潜力在哪
+> - **中篇**：[KN 企业知识网络架构设计](/docs/kn-architecture-design.md) —— 如果要改造成企业级，架构应该长什么样
+> - **下篇**：[KN 改造方案：从源码出发](/docs/kn-transformation-from-nashsu.md) —— 具体怎么改，最终产品形态
 
 ---
 
@@ -322,5 +322,7 @@ nashsu/llm_wiki 为"企业知识网络"提供了一个高质量的起点——�
 
 ---
 
-> **下一篇（中篇）**：[KN 企业知识网络架构设计](/research-blog/posts/kn-architecture-design/)  
-> 如果要把 nashsu 改造成企业级，架构应该长什么样——从员工上传文档到 Agent 探索知识网络的完整架构。
+> **系列导航**：
+> - **上篇（本文）**：[nashsu/llm_wiki 源码架构分析](/docs/nashsu-llmwiki-architecture-deep-dive.md) —— 当前架构与核心思想
+> - **中篇**：[KN 企业知识网络架构设计](/docs/kn-architecture-design.md) —— 企业级架构蓝图
+> - **下篇**：[KN 改造方案：从源码出发](/docs/kn-transformation-from-nashsu.md) —— 具体改法与最终产品形态

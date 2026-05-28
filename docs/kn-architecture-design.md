@@ -8,9 +8,9 @@ series_order: 2
 ---
 
 > **KN 企业知识网络系列（共三篇）**：
-> - **上篇**：[nashsu/llm_wiki 源码架构分析](/research-blog/posts/nashsu-llmwiki-architecture-deep-dive/) —— 当前架构是什么，核心思想是什么
-> - **中篇（本文）**：KN 企业知识网络架构设计 —— 如果要改造成企业级，架构应该长什么样
-> - **下篇**：[KN 改造方案：从源码出发](/research-blog/posts/kn-transformation-from-nashsu/) —— 具体怎么改，最终产品形态
+> - **上篇**：[nashsu/llm_wiki 源码架构分析](/docs/nashsu-llmwiki-architecture-deep-dive.md) —— 当前架构是什么，核心思想是什么
+> - **中篇（本文）**：[KN 企业知识网络架构设计](/docs/kn-architecture-design.md) —— 如果要改造成企业级，架构应该长什么样
+> - **下篇**：[KN 改造方案：从源码出发](/docs/kn-transformation-from-nashsu.md) —— 具体怎么改，最终产品形态
 
 ---
 
@@ -46,7 +46,7 @@ series_order: 2
 
 ### 从 nashsu 到 KN 的跨越
 
-nashsu/llm_wiki 在诉求 2/3/4/5 上已经有高质量的核心实现（详见[上篇源码分析](/research-blog/posts/nashsu-llmwiki-architecture-deep-dive/)）。KN 的任务是在此基础上补全诉求 1（多入口上传）、诉求 6（MCP + WebUI 双通道）、诉求 7（企业级治理），以及将桌面单用户架构改造为多租户服务端。
+nashsu/llm_wiki 在诉求 2/3/4/5 上已经有高质量的核心实现（详见[上篇源码分析](/docs/nashsu-llmwiki-architecture-deep-dive.md)）。KN 的任务是在此基础上补全诉求 1（多入口上传）、诉求 6（MCP + WebUI 双通道）、诉求 7（企业级治理），以及将桌面单用户架构改造为多租户服务端。
 
 ---
 
@@ -58,7 +58,7 @@ nashsu/llm_wiki 在诉求 2/3/4/5 上已经有高质量的核心实现（详见[
 
 ### 1.2 为什么选 nashsu/llm_wiki 作为底座
 
-调研结论详见[企业级 LLM Wiki 方案调研报告](/research-blog/posts/llm-wiki-enterprise-research/)和[上篇源码分析](/research-blog/posts/nashsu-llmwiki-architecture-deep-dive/)。选型核心依据：
+调研结论详见[企业级 LLM Wiki 方案调研报告](/docs/llm-wiki-enterprise-research.md)和[上篇源码分析](/docs/nashsu-llmwiki-architecture-deep-dive.md)。选型核心依据：
 
 | 维度 | nashsu/llm_wiki 优势 |
 |------|---------------------|
@@ -756,7 +756,6 @@ nashsu/llm_wiki 前端（React 19 + shadcn/ui + Tailwind）的大量组件可**�
 ---
 
 > **系列导航**：
-> - **上篇**：[nashsu/llm_wiki 源码架构分析](/research-blog/posts/nashsu-llmwiki-architecture-deep-dive/) —— 当前架构与核心思想
-> - **中篇（本文）**：KN 企业知识网络架构设计 —— 企业级架构蓝图
-> - **下篇**：[KN 改造方案：从源码出发](/research-blog/posts/kn-transformation-from-nashsu/) —— 具体改法与最终产品形态
-
+> - **上篇**：[nashsu/llm_wiki 源码架构分析](/docs/nashsu-llmwiki-architecture-deep-dive.md) —— 当前架构与核心思想
+> - **中篇（本文）**：[KN 企业知识网络架构设计](/docs/kn-architecture-design.md) —— 企业级架构蓝图
+> - **下篇**：[KN 改造方案：从源码出发](/docs/kn-transformation-from-nashsu.md) —— 具体改法与最终产品形态
