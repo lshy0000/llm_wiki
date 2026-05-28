@@ -179,7 +179,7 @@ export function KnowledgeBaseDetail({
 
       <div className="grid min-h-0 flex-1 grid-cols-[42%_minmax(0,1fr)] gap-3 p-3">
         <div className="flex min-w-0 flex-col gap-3">
-          <section className="rounded-lg border border-neutral-200 bg-white p-3 shadow-sm">
+          <section className="rounded-lg border border-neutral-200 bg-white p-2.5 shadow-sm">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
                 <div className="flex items-center justify-between gap-3">
@@ -187,7 +187,7 @@ export function KnowledgeBaseDetail({
                   {isAdmin && (
                     <button
                       type="button"
-                      className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-red-200 px-2.5 text-xs text-red-700 hover:bg-red-50"
+                      className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-red-200 px-2 text-xs text-red-700 hover:bg-red-50"
                       onClick={() => { setDeleteError(null); setDeleteOpen(true) }}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
@@ -197,15 +197,15 @@ export function KnowledgeBaseDetail({
                 </div>
                 <p className="mt-1 line-clamp-1 text-sm leading-5 text-neutral-600">{kb.description || "浏览器知识库详情"}</p>
               </div>
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-cyan-50 text-cyan-700">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-cyan-50 text-cyan-700">
                 <LibraryBig className="h-5 w-5" />
               </div>
             </div>
-            <div className="mt-3 grid grid-cols-3 gap-2">
+            <div className="mt-2 grid grid-cols-3 gap-2">
               <MiniInfo label="原始文件" value="raw/" />
               <MiniInfo label="Wiki 页面" value="wiki/" />
               {isAdmin && embeddingModels.length > 0 ? (
-                <div className="rounded-md border border-neutral-100 bg-neutral-50 px-2 py-1.5">
+                <div className="rounded-md border border-neutral-100 bg-neutral-50 px-2 py-1">
                   <div className="text-xs text-neutral-500">向量模型</div>
                   <select
                     className="mt-1 h-7 w-full truncate rounded border border-neutral-200 bg-white px-2 text-sm font-medium outline-none focus:border-cyan-600 disabled:opacity-60"
@@ -303,7 +303,7 @@ export function KnowledgeBaseDetail({
 
 function MiniInfo({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-neutral-100 bg-neutral-50 px-2 py-1.5">
+    <div className="rounded-md border border-neutral-100 bg-neutral-50 px-2 py-1">
       <div className="text-xs text-neutral-500">{label}</div>
       <div className="mt-0.5 truncate text-sm font-medium">{value}</div>
     </div>
