@@ -17,6 +17,7 @@ import { useWikiStore } from "@/stores/wiki-store"
 import { writeFile, readFile, listDirectory, deleteFile } from "@/commands/fs"
 import { normalizePath } from "@/lib/path-utils"
 import { hasConfiguredDeepResearchSources } from "@/lib/web-search"
+import { shanghaiToday } from "@/lib/time"
 import { useTranslation } from "react-i18next"
 
 const typeConfig: Record<ReviewItem["type"], { icon: typeof AlertTriangle; label: string; color: string }> = {
@@ -74,7 +75,7 @@ export function ReviewView() {
         const firstLine = cleanContent.split("\n").find((l) => l.trim() && !l.startsWith("<!--"))?.replace(/^#+\s*/, "").trim() ?? "Saved Query"
         const title = firstLine.slice(0, 60)
         const slug = title.toLowerCase().replace(/[^a-z0-9\s-]/g, "").trim().replace(/\s+/g, "-").slice(0, 50)
-        const date = new Date().toISOString().slice(0, 10)
+        const date = shanghaiToday()
         const fileName = `${slug}-${date}.md`
         const filePath = `${pp}/wiki/queries/${fileName}`
 
@@ -176,7 +177,7 @@ export function ReviewView() {
         try {
           const title = item.title.replace(/^(Create|Save|Add)[:\s]*/i, "").trim() || "Untitled"
           const slug = title.toLowerCase().replace(/[^a-z0-9\s-]/g, "").trim().replace(/\s+/g, "-").slice(0, 50)
-          const date = new Date().toISOString().slice(0, 10)
+          const date = shanghaiToday()
 
           // Determine page type from review type or action text
           const pageType = detectPageType(realAction, item.type)

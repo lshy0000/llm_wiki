@@ -26,6 +26,7 @@
  * even when the title yields an identical slug (e.g. several Chinese
  * conversations with the same topic, or repeated "Untitled" saves).
  */
+import { formatShanghaiClockStamp, formatShanghaiDate } from "./time"
 
 /** Produce just the slug — exported for tests / callers that want
  *  to reuse it in places like the index.md wikilink target. */
@@ -52,11 +53,8 @@ export function makeQueryFileName(
   now: Date = new Date(),
 ): { slug: string; fileName: string; date: string; time: string } {
   const slug = makeQuerySlug(title)
-  // UTC timestamp — avoids DST / timezone-flipping surprises when
-  // the same save produces different filenames on different machines.
-  const iso = now.toISOString() // e.g. 2026-04-23T14:30:52.123Z
-  const date = iso.slice(0, 10) // 2026-04-23
-  const time = iso.slice(11, 19).replace(/:/g, "") // 143052
+  const date = formatShanghaiDate(now)
+  const time = formatShanghaiClockStamp(now)
   return {
     slug,
     date,

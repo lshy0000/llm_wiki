@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { CheckCircle2, Copy, KeyRound, Pencil, Plus, Trash2, X } from "lucide-react"
 import { api } from "@/web/api"
 import type { UserApiKey, UserApiKeyCreated } from "@/web/types"
+import { formatShanghaiDateTime } from "@/lib/time"
 
 type CopyState = "idle" | "ok" | "error"
 
@@ -192,7 +193,7 @@ export function ApiKeysPage() {
                           )}
                         </td>
                         <td className="px-4 py-3 font-mono text-xs text-neutral-500">...{row.keyHint}</td>
-                        <td className="px-4 py-3 text-neutral-500">{formatDate(row.createdAt)}</td>
+                        <td className="px-4 py-3 text-neutral-500">{formatShanghaiDateTime(row.createdAt)}</td>
                         <td className="px-4 py-3">
                           {editId === row.id ? (
                             <div className="flex justify-end gap-2">
@@ -352,11 +353,6 @@ function fallbackCopy(value: string): boolean {
   } finally {
     document.body.removeChild(textarea)
   }
-}
-
-function formatDate(value: string): string {
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
 }
 
 function errorMessage(err: unknown): string {

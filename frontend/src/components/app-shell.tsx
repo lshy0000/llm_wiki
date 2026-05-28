@@ -24,6 +24,7 @@ import {
 } from "lucide-react"
 import { api } from "@/web/api"
 import type { AuthPayload, BackgroundTask, KnowledgeBase } from "@/web/types"
+import { formatShanghaiDateTime } from "@/lib/time"
 
 type ActivePage = "home" | "database" | "detail" | "extensions" | "docs" | "companySettings" | "apiKeys"
 
@@ -420,7 +421,7 @@ function TaskCenterRow({
           <div className="h-full rounded bg-cyan-700" style={{ width: `${task.progress}%` }} />
         </div>
       </div>
-      <div className="text-xs text-neutral-500">{new Date(task.createdAt).toLocaleString()}</div>
+      <div className="text-xs text-neutral-500">{formatShanghaiDateTime(task.createdAt)}</div>
       <div className="flex justify-end">
         {busy ? (
           <button className="inline-flex h-8 items-center gap-1.5 rounded-md border border-neutral-200 px-3 text-xs hover:bg-neutral-50" onClick={() => void cancel()}>

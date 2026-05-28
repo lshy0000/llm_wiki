@@ -15,19 +15,10 @@ import { normalizePath, getFileName, getRelativePath } from "@/lib/path-utils"
 import { getOutputLanguage, buildLanguageDirective, buildLanguageReminder } from "@/lib/output-language"
 import { isGreeting } from "@/lib/greeting-detector"
 import { computeContextBudget } from "@/lib/context-budget"
+import { formatShanghaiConversationTime } from "@/lib/time"
 
 // Store the page mapping from the last query so SourceFilesBar can show which pages were cited
 export let lastQueryPages: { title: string; path: string }[] = []
-
-function formatDate(timestamp: number): string {
-  const d = new Date(timestamp)
-  const now = new Date()
-  const isToday = d.toDateString() === now.toDateString()
-  if (isToday) {
-    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-  }
-  return d.toLocaleDateString([], { month: "short", day: "numeric" })
-}
 
 function ConversationSidebar() {
   const { t } = useTranslation()
@@ -103,7 +94,7 @@ function ConversationSidebar() {
                   )}
                 </div>
                 <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                  <span>{formatDate(conv.updatedAt)}</span>
+                  <span>{formatShanghaiConversationTime(conv.updatedAt)}</span>
                   {msgCount > 0 && (
                     <>
                       <span>·</span>

@@ -8,6 +8,7 @@ import { Folder, Play, RefreshCw } from "lucide-react"
 import type { SettingsDraft, DraftSetter } from "../settings-types"
 import { useWikiStore } from "@/stores/wiki-store"
 import { scanAndImport } from "@/lib/scheduled-import"
+import { formatShanghaiDateTime } from "@/lib/time"
 
 interface Props {
   draft: SettingsDraft
@@ -47,7 +48,7 @@ export function ScheduledImportSection({ draft, setDraft }: Props) {
   }, [project, draft.scheduledImportPath, isScanning])
 
   const lastScanDate = scheduledImportConfig.lastScan
-    ? new Date(scheduledImportConfig.lastScan).toLocaleString()
+    ? formatShanghaiDateTime(scheduledImportConfig.lastScan)
     : t("settings.sections.scheduledImport.never", { defaultValue: "Never" })
 
   return (

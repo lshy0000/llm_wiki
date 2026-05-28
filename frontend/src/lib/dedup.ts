@@ -34,6 +34,7 @@ import {
   mergeArrayFieldsIntoContent,
   writeFrontmatterArray,
 } from "./sources-merge"
+import { shanghaiToday } from "./time"
 
 // ──────────────────────────────────────────────────────────────────
 // Types
@@ -513,7 +514,7 @@ function setFrontmatterScalar(
 }
 
 function defaultToday(): string {
-  return new Date().toISOString().slice(0, 10)
+  return shanghaiToday()
 }
 
 // ──────────────────────────────────────────────────────────────────

@@ -1,4 +1,5 @@
 import yaml from "js-yaml"
+import { formatShanghaiDate } from "./time"
 
 export type FrontmatterValue = string | string[]
 
@@ -194,7 +195,7 @@ function stringifyScalar(v: unknown): string {
   if (v === null || v === undefined) return ""
   if (typeof v === "string") return v
   if (typeof v === "number" || typeof v === "boolean") return String(v)
-  if (v instanceof Date) return v.toISOString().slice(0, 10)
+  if (v instanceof Date) return formatShanghaiDate(v)
   // Object / nested array → JSON so the user still sees something.
   try {
     return JSON.stringify(v)

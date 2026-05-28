@@ -7,6 +7,7 @@ import { useWikiStore, type LlmConfig, type SearchApiConfig } from "@/stores/wik
 import { useResearchStore } from "@/stores/research-store"
 import { normalizePath } from "@/lib/path-utils"
 import { buildLanguageDirective } from "@/lib/output-language"
+import { shanghaiToday } from "@/lib/time"
 
 const MAX_RESEARCH_SOURCES = 20
 
@@ -330,7 +331,7 @@ async function executeResearch(
     // Step 3: Save to wiki
     store.updateTask(taskId, { status: "saving", synthesis: accumulated })
 
-    const date = new Date().toISOString().slice(0, 10)
+    const date = shanghaiToday()
     const slug = topic.toLowerCase().replace(/[^a-z0-9\s-]/g, "").trim().replace(/\s+/g, "-").slice(0, 50)
     const fileName = `research-${slug}-${date}.md`
     const filePath = `${pp}/wiki/queries/${fileName}`

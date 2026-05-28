@@ -25,6 +25,7 @@ import { captionMarkdownImages, loadCaptionCache } from "@/lib/image-caption-pip
 import type { MultimodalConfig } from "@/stores/wiki-store"
 import { GENERATION_WIKI_TYPES } from "@/lib/wiki-page-types"
 import { computeContextBudget } from "@/lib/context-budget"
+import { formatShanghaiFileTimestamp, shanghaiToday } from "@/lib/time"
 
 const LONG_SOURCE_MIN_BUDGET = 8_000
 const LONG_SOURCE_MAX_SINGLE_PASS_BUDGET = 300_000
@@ -798,7 +799,7 @@ async function autoIngestImpl(
   // Returning no files lets processNext's length-0 safety net mark the
   // task for retry rather than "success".
   if (!hasSourceSummary && !signal?.aborted) {
-    const date = new Date().toISOString().slice(0, 10)
+    const date = shanghaiToday()
     const fallbackContent = [
       "---",
       `type: source`,
@@ -2076,7 +2077,7 @@ async function backupExistingPage(
   relativePath: string,
   existingContent: string,
 ): Promise<void> {
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-")
+  const stamp = formatShanghaiFileTimestamp()
   const sanitized = relativePath.replace(/[/\\]/g, "_")
   const backupPath = `${projectPath}/.llm-wiki/page-history/${sanitized}-${stamp}`
   await writeFile(backupPath, existingContent)
@@ -2133,7 +2134,7 @@ async function injectImagesIntoSourceSummary(
       // them, which means the lint view's orphan-page sweep eventually
       // reaps the media directory (cascadeDeleteWikiPage triggered by
       // a missing source page) — silent loss of extracted images.
-      const date = new Date().toISOString().slice(0, 10)
+      const date = shanghaiToday()
       const stubFrontmatter = [
         "---",
         "type: source",

@@ -25,6 +25,7 @@
  */
 import { parseFrontmatter } from "./frontmatter"
 import { mergeArrayFieldsIntoContent } from "./sources-merge"
+import { shanghaiToday } from "./time"
 
 /** Frontmatter array fields unioned across re-ingests. */
 const UNION_FIELDS = ["sources", "tags", "related"] as const
@@ -82,7 +83,7 @@ export interface MergePageOptions {
    *  block the merge. */
   backup?: (existingContent: string) => Promise<void>
   /** Date provider for the `updated` field. Injectable for
-   *  deterministic tests. Defaults to today's UTC date. */
+   *  deterministic tests. Defaults to today's Shanghai date. */
   today?: () => string
 }
 
@@ -195,7 +196,7 @@ async function tryBackup(
 }
 
 function defaultToday(): string {
-  return new Date().toISOString().slice(0, 10)
+  return shanghaiToday()
 }
 
 /**

@@ -20,6 +20,7 @@ import {
   type MergeResult,
 } from "./dedup"
 import { loadNotDuplicates } from "./dedup-storage"
+import { formatShanghaiFileTimestamp } from "./time"
 
 /**
  * Wrap streamChat into the (system, user, signal) → string shape
@@ -212,7 +213,7 @@ export async function executeMerge(
   // 2. Snapshot backup before any writes. If a write fails partway
   //    through, the user has the pre-merge state intact in
   //    .llm-wiki/page-history/.
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-")
+  const stamp = formatShanghaiFileTimestamp()
   const backupDir = `${pp}/.llm-wiki/page-history/dedup-${stamp}`
   for (const b of result.backup) {
     const sanitized = b.path.replace(/[/\\]/g, "_")

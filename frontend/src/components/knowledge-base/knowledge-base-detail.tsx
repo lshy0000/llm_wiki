@@ -32,6 +32,7 @@ import {
   type LucideIcon,
 } from "lucide-react"
 import { API_BASE, api, getAuthToken } from "@/web/api"
+import { formatShanghaiDateTime } from "@/lib/time"
 import {
   KB_TYPE_LABEL,
   sortFileTreeNodes,
@@ -169,7 +170,7 @@ export function KnowledgeBaseDetail({
           </div>
         </div>
         <div className="flex items-center gap-2 text-xs text-neutral-500">
-          <span>更新于 {new Date(kb.updatedAt).toLocaleString()}</span>
+          <span>更新于 {formatShanghaiDateTime(kb.updatedAt)}</span>
           <button className="inline-flex h-8 items-center gap-2 rounded-md border border-neutral-200 px-3 text-sm text-neutral-600">
             <Settings className="h-4 w-4" />
             检索配置
@@ -396,7 +397,7 @@ function SourcesPanel({ kbId }: { kbId: string }) {
     if (conflicts.length > 0) {
       const lines = conflicts.slice(0, 12).map((item) => {
         const existing = existingByPath.get(item.relativePath)
-        const updatedAt = existing?.updatedAt ? new Date(existing.updatedAt).toLocaleString() : "未知时间"
+        const updatedAt = formatShanghaiDateTime(existing?.updatedAt, "未知时间")
         return `- ${item.relativePath}（原文件更新时间：${updatedAt}）`
       })
       const more = conflicts.length > lines.length ? `\n... 另有 ${conflicts.length - lines.length} 个冲突文件` : ""
@@ -1134,7 +1135,7 @@ function AgentChatPanel({ kbId }: { kbId: string }) {
               type="button"
             >
               <div className="truncate font-medium">{item.title || "未命名会话"}</div>
-              <div className="mt-1 truncate text-[11px] text-neutral-400">{new Date(item.updatedAt).toLocaleString()}</div>
+              <div className="mt-1 truncate text-[11px] text-neutral-400">{formatShanghaiDateTime(item.updatedAt)}</div>
             </button>
           ))}
         </div>
@@ -2121,12 +2122,12 @@ function ReviewsPanel({ kbId }: { kbId: string }) {
                       <span className={`border px-2 py-1 ${status.className}`}>{status.label}</span>
                     </div>
                   </div>
-                  <span className="shrink-0 border border-neutral-300 px-2 py-1 text-xs">{new Date(review.createdAt).toLocaleString()}</span>
+                  <span className="shrink-0 border border-neutral-300 px-2 py-1 text-xs">{formatShanghaiDateTime(review.createdAt)}</span>
                 </div>
                 <p className="mt-3 whitespace-pre-wrap text-sm leading-6 text-neutral-700">{review.description}</p>
                 {review.action && <p className="mt-2 text-sm text-teal-800">{review.action}</p>}
                 <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-                  <p className="text-xs text-neutral-500">更新于 {new Date(review.updatedAt).toLocaleString()}</p>
+                  <p className="text-xs text-neutral-500">更新于 {formatShanghaiDateTime(review.updatedAt)}</p>
                   <div className="flex flex-wrap gap-2">
                     {review.status === "open" ? (
                       <>

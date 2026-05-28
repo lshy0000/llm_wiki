@@ -69,21 +69,21 @@ describe("makeQuerySlug", () => {
 })
 
 describe("makeQueryFileName", () => {
-  // Fixed UTC clock for deterministic assertions.
+  // Fixed instant for deterministic Shanghai-time assertions.
   const NOW = new Date("2026-04-23T14:30:52.123Z")
 
   it("produces slug-YYYY-MM-DD-HHMMSS.md shape", () => {
     const { fileName, slug, date, time } = makeQueryFileName("Attention Is All You Need", NOW)
     expect(slug).toBe("attention-is-all-you-need")
     expect(date).toBe("2026-04-23")
-    expect(time).toBe("143052")
-    expect(fileName).toBe("attention-is-all-you-need-2026-04-23-143052.md")
+    expect(time).toBe("223052")
+    expect(fileName).toBe("attention-is-all-you-need-2026-04-23-223052.md")
   })
 
-  it("two saves of the SAME title within the same day produce DIFFERENT filenames (the reported bug)", () => {
-    const a = makeQueryFileName("旋转位置编码", new Date("2026-04-23T10:00:00.000Z"))
-    const b = makeQueryFileName("旋转位置编码", new Date("2026-04-23T14:30:52.123Z"))
-    const c = makeQueryFileName("旋转位置编码", new Date("2026-04-23T23:59:59.999Z"))
+  it("two saves of the SAME title within the same Shanghai day produce DIFFERENT filenames (the reported bug)", () => {
+    const a = makeQueryFileName("旋转位置编码", new Date("2026-04-23T00:00:00.000Z"))
+    const b = makeQueryFileName("旋转位置编码", new Date("2026-04-23T10:30:52.123Z"))
+    const c = makeQueryFileName("旋转位置编码", new Date("2026-04-23T15:59:59.999Z"))
     // All three must be distinct — this is the whole point of the fix.
     expect(new Set([a.fileName, b.fileName, c.fileName]).size).toBe(3)
     // And all three must share the same slug prefix (so users can
@@ -97,17 +97,15 @@ describe("makeQueryFileName", () => {
   it("emoji-only title falls back to 'query' but still produces distinct filenames per save", () => {
     const a = makeQueryFileName("🎉🔥", new Date("2026-04-23T10:00:00Z"))
     const b = makeQueryFileName("🎉🔥", new Date("2026-04-23T10:00:01Z"))
-    expect(a.fileName).toBe("query-2026-04-23-100000.md")
-    expect(b.fileName).toBe("query-2026-04-23-100001.md")
+    expect(a.fileName).toBe("query-2026-04-23-180000.md")
+    expect(b.fileName).toBe("query-2026-04-23-180001.md")
     expect(a.fileName).not.toBe(b.fileName)
   })
 
-  it("uses UTC so same timestamp from different timezones hashes identically", () => {
-    // toISOString always reports UTC, so the filename is stable
-    // across machines with different local clocks. A regression to
-    // toTimeString / getHours would make this test fail on any
-    // machine not in UTC.
-    const { time } = makeQueryFileName("x", new Date("2026-04-23T14:30:52.000Z"))
-    expect(time).toBe("143052")
+  it("uses Shanghai date when the UTC day has not caught up", () => {
+    const { date, time, fileName } = makeQueryFileName("x", new Date("2026-04-23T16:30:52.000Z"))
+    expect(date).toBe("2026-04-24")
+    expect(time).toBe("003052")
+    expect(fileName).toBe("x-2026-04-24-003052.md")
   })
 })

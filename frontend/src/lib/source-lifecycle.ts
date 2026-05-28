@@ -40,6 +40,7 @@ import {
   stripDeletedWikilinks,
 } from "@/lib/wiki-cleanup"
 import { collectAllFilesIncludingDot } from "@/lib/sources-tree-delete"
+import { shanghaiToday, shanghaiTodayCompact } from "@/lib/time"
 
 export const INGESTABLE_SOURCE_EXTENSIONS = new Set(AUTO_INGEST_SOURCE_EXTENSIONS)
 
@@ -601,7 +602,7 @@ async function getUniqueDestPath(dir: string, fileName: string): Promise<string>
 
   const ext = fileName.includes(".") ? fileName.slice(fileName.lastIndexOf(".")) : ""
   const nameWithoutExt = ext ? fileName.slice(0, -ext.length) : fileName
-  const date = new Date().toISOString().slice(0, 10).replace(/-/g, "")
+  const date = shanghaiTodayCompact()
 
   const withDate = `${dir}/${nameWithoutExt}-${date}${ext}`
   if (!(await fileExists(withDate))) {
@@ -627,7 +628,7 @@ async function appendSourceDeleteLog(
     const names = Array.isArray(fileNames) ? fileNames : [fileNames]
     const logPath = `${projectPath}/wiki/log.md`
     const logContent = await readFile(logPath).catch(() => "# Wiki Log\n")
-    const date = new Date().toISOString().slice(0, 10)
+    const date = shanghaiToday()
     const subject = names.length === 1 ? names[0] : `${names.length} source files`
     const listed = names.length === 1 ? "" : `\n\nSources:\n${names.map((name) => `- ${name}`).join("\n")}`
     const logEntry = `\n## [${date}] ${detail.reason} | ${subject}\n\nDeleted ${names.length} source file${names.length === 1 ? "" : "s"} and ${detail.deletedWikiCount} wiki pages.${detail.keptWikiCount > 0 ? ` ${detail.keptWikiCount} shared pages kept (have other sources).` : ""}${listed}\n`
