@@ -1,5 +1,8 @@
 # LLM Wiki
-
+<div align="center" style="background-color: #fff3cd; border-left: 6px solid #ffc107; padding: 12px;">
+  <strong>⚠️ 停止维护通知</strong><br>
+  此开源版本已停止维护。如需企业版 LLM Wiki，请联系作者：<a href="mailto:xxx@example.com">2385467836@qq.com</a>
+</div>
 <p align="center">
   <img src="logo.jpg" width="128" height="128" style="border-radius: 22%;" alt="LLM Wiki Logo">
 </p>
